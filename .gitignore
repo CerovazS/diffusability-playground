@@ -1,0 +1,6 @@
+.venv/
+outputs/
+SiT/
+__pycache__/
+*.pyc
+.vscode/

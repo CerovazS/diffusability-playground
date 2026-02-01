@@ -1,0 +1,65 @@
+# conf/dataset/synth_pc.yaml
+_target_: synthetic_pointclouds.ConditionalPointCloudDataset
+
+cfg:
+  num_samples: 100000
+  points_per_cloud: 512
+  num_classes: 3
+  base_seed: 1234
+  device: cuda
+
+  classes:
+    0:
+      family: affine_subspace
+      d: 2
+      D: 2
+      K: 4
+      separation: 6.0
+      thickness: 0.05
+      mode_weights: null
+      orientation_per_mode: true
+      tail:
+        kind: gauss
+      anisotropy:
+        enabled: false
+      curvature:
+        enabled: false
+
+    1:
+      family: sine_warp_subspace
+      d: 2
+      D: 2
+      K: 4
+      separation: 6.0
+      thickness: 0.05
+      mode_weights: null
+      orientation_per_mode: true
+      tail:
+        kind: student_t
+        student_df: 3.0
+      anisotropy:
+        enabled: true
+        min_scale: 0.3
+        max_scale: 3.0
+        permute_per_mode: true
+      curvature:
+        enabled: true
+        alpha: 0.6
+        freq: 2.0
+
+    2:
+      family: mog
+      d: 0   # unused in mog, keep any value
+      D: 2
+      K: 8
+      separation: 8.0
+      thickness: 0.02
+      mog_diag_cov: 1.0
+      mode_weights: null
+      orientation_per_mode: true
+      tail:
+        kind: gauss
+      anisotropy:
+        enabled: false
+      curvature:
+        enabled: false
