@@ -1,12 +1,14 @@
 results_dir: results
-epochs: 1400
+epochs: 20
 global_batch_size: 256
 global_seed: 0
 num_workers: 4
 log_every: 100
 ckpt_every: 50000
 sample_every: 10000
-wandb: false
+wandb: true
+wandb_entity: ar_spectra
+wandb_project: diffusion-playground
 
 # Optimizer
 lr: 1.0e-4

@@ -1,8 +1,15 @@
 defaults:
-  - data: image_folder
-  - model: sit_xl_2
+  - data: synth_pc_datamodule
+  - model: mini_sit
   - trainer: sit_trainer
   - _self_
+
+# =============================================================================
+# Shared experiment parameters - single source of truth
+# =============================================================================
+# Ambient/embedding dimension for point clouds (D in class params)
+# This should be consistent across data config and model config
+ambient_dim: 2
 
 ckpt: null
 

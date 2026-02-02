@@ -1,68 +1,96 @@
-# conf/dataset/synth_pc.yaml
+# conf/data/synth_pc.yaml
 _target_: datamodules.synthetic_pointclouds.ConditionalPointCloudDataset
+_convert_: all
 
 cfg:
-  num_samples: 100000
+  _target_: datamodules.synthetic_pointclouds.DatasetConfig
+  _convert_: all
+  num_samples: 10000
   points_per_cloud: 512
-  num_classes: 3
+  # num_classes is auto-computed from class_sweeps (4 separations × 2 thicknesses = 8)
+  num_classes: 8
   base_seed: 1234
-  device: cuda
+  device: cpu  # Must be cpu for DataLoader multiprocessing; GPU transfer happens in training loop
+  samples_per_class: null
 
-  classes:
-    0:
-      family: affine_subspace
-      d: 2
-      D: 2
-      K: 16
-      separation: 20.0
-      thickness: 0.05
-      mode_weights: null
-      orientation_per_mode: true
-      tail:
-        kind: gauss
-      anisotropy:
-        enabled: false
-        min_scale: 0.5
-        max_scale: 20.0
-        permute_per_mode: false
-      curvature:
-        enabled: false
+  # classes:
+  #   0:
+  #     family: affine_subspace
+  #     d: 2
+  #     D: 2
+  #     K: 16
+  #     separation: 20.0
+  #     thickness: 0.05
+  #     mode_weights: null
+  #     orientation_per_mode: true
+  #     tail:
+  #       kind: gauss
+  #     anisotropy:
+  #       enabled: false
+  #       min_scale: 0.5
+  #       max_scale: 20.0
+  #       permute_per_mode: false
+  #     curvature:
+  #       enabled: false
 
-    1:
-      family: sine_warp_subspace
-      d: 2
-      D: 2
-      K: 4
-      separation: 6.0
-      thickness: 0.05
-      mode_weights: null
-      orientation_per_mode: true
-      tail:
-        kind: student_t
-        student_df: 3.0
-      anisotropy:
-        enabled: true
-        min_scale: 0.3
-        max_scale: 3.0
-        permute_per_mode: true
-      curvature:
-        enabled: true
-        alpha: 0.6
-        freq: 2.0
+  #   1:
+  #     family: sine_warp_subspace
+  #     d: 2
+  #     D: 2
+  #     K: 4
+  #     separation: 6.0
+  #     thickness: 0.05
+  #     mode_weights: null
+  #     orientation_per_mode: true
+  #     tail:
+  #       kind: student_t
+  #       student_df: 3.0
+  #     anisotropy:
+  #       enabled: true
+  #       min_scale: 0.3
+  #       max_scale: 3.0
+  #       permute_per_mode: true
+  #     curvature:
+  #       enabled: true
+  #       alpha: 0.6
+  #       freq: 2.0
 
-    2:
-      family: mog
-      d: 0   # unused in mog, keep any value
-      D: 2
-      K: 8
-      separation: 8.0
-      thickness: 0.02
-      mog_diag_cov: 1.0
-      mode_weights: null
-      orientation_per_mode: true
-      tail:
-        kind: gauss
-      anisotropy:
-        enabled: false
-      curvature:
-        enabled: false
+  #   2:
+  #     family: mog
+  #     d: 0   # unused in mog, keep any value
+  #     D: 2
+  #     K: 8
+  #     separation: 8.0
+  #     thickness: 0.02
+  #     mog_diag_cov: 1.0
+  #     mode_weights: null
+  #     orientation_per_mode: true
+  #     tail:
+  #       kind: gauss
+  #     anisotropy:
+  #       enabled: false
+  #     curvature:
+  #       enabled: false
+
+  # Optional: expand additional classes via sweep(s).
+  # Each entry defines a base class and a parameter grid (cartesian product).
+  # NOTE: D uses global ambient_dim for consistency with model input channels
+  class_sweeps:
+    - name: sweep_affine_sep
+      base:
+        family: affine_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 8
+        separation: 4.0
+        thickness: 0.05
+        orientation_per_mode: true
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        separation: [2.0, 4.0, 6.0, 8.0]
+        thickness: [0.02, 0.05]

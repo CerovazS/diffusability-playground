@@ -1,0 +1,36 @@
+name: mini-SiT
+num_classes: ${data.dataset.cfg.num_classes}
+cfg_scale: 4.0
+vae: ema
+# Input channels from datamodule (which derives it from dataset.ambient_dim)
+in_channels: ${data.in_channels}
+use_pos_embed: false
+use_patch_embed: false
+input_size: 1
+
+transport:
+  path_type: Linear
+  prediction: velocity
+  loss_weight: null
+  train_eps: null
+  sample_eps: null
+
+# Sampling configuration
+sampling:
+  # Mode: "ODE" or "SDE"
+  mode: ODE
+  # ODE settings
+  ode:
+    method: dopri5  # dopri5, euler, heun
+    num_steps: 50
+    atol: 1.0e-6
+    rtol: 1.0e-3
+    reverse: false
+  # SDE settings
+  sde:
+    method: Euler  # Euler, Heun
+    num_steps: 250
+    diffusion_form: SBDM  # constant, SBDM, sigma, linear, decreasing, increasing-decreasing
+    diffusion_norm: 1.0
+    last_step: Mean  # null, Mean, Tweedie, Euler
+    last_step_size: 0.04

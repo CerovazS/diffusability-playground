@@ -1,6 +1,9 @@
-_target_: SiT.train.ImageFolderDataModule
+_target_: datamodules.image_datamodule.ImageFolderDataModule
 
 data_path: data
 image_size: 256
+num_classes: 1000
+in_channels: 4
+use_vae: true
 pin_memory: true
 drop_last: true

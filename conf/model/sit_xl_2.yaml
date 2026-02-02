@@ -1,8 +1,11 @@
 name: SiT-XL/2
 image_size: ${data.image_size}
-num_classes: 1000
+num_classes: ${data.num_classes}
 cfg_scale: 4.0
 vae: ema
+in_channels: ${data.in_channels}
+use_pos_embed: true
+use_patch_embed: true
 
 transport:
   path_type: Linear

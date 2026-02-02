@@ -70,13 +70,21 @@ def ensure_plot_cfg(cfg: DictConfig) -> PlotConfig:
     return PlotConfig(**OmegaConf.to_container(merged, resolve=True))
 
 
-@hydra.main(config_path="../conf", config_name="plot", version_base=None)
-def main(cfg: DictConfig):
-    info(OmegaConf.to_yaml(cfg))
+def _plot_classes(
+    ds,
+    plot_cfg: PlotConfig,
+    class_ids,
+    out_name: str,
+):
+    # Collect points per class
+    points_by_class: Dict[int, List[torch.Tensor]] = {y: [] for y in class_ids}
+    counts: Dict[int, int] = {y: 0 for y in class_ids}
 
-    plot_cfg = ensure_plot_cfg(cfg)
+    def class_full(y: int) -> bool:
+        return counts[y] >= plot_cfg.max_points_per_class
 
-    ds = hydra.utils.instantiate(cfg.data)
+    all_full = lambda: all(class_full(y) for y in class_ids)
+
     dl = DataLoader(
         ds,
         batch_size=32,
@@ -85,19 +93,6 @@ def main(cfg: DictConfig):
         collate_fn=collate_pointclouds,
         drop_last=False,
     )
-
-    # Collect points per class
-    class_ids = sorted(ds.class_params.keys()) if hasattr(ds, "class_params") else None
-    if class_ids is None:
-        raise RuntimeError("Dataset must expose .class_params (dict y->params) for per-class plotting.")
-
-    points_by_class: Dict[int, List[torch.Tensor]] = {y: [] for y in class_ids}
-    counts: Dict[int, int] = {y: 0 for y in class_ids}
-
-    def class_full(y: int) -> bool:
-        return counts[y] >= plot_cfg.max_points_per_class
-
-    all_full = lambda: all(class_full(y) for y in class_ids)
 
     device = "cpu"  # plotting pipeline stays on CPU
     batches_seen = 0
@@ -195,8 +190,30 @@ def main(cfg: DictConfig):
         axes[r][c].axis("off")
 
     fig.tight_layout()
-    fig.savefig(plot_cfg.out_name, dpi=plot_cfg.dpi, bbox_inches="tight")
-    ok(f"Saved: {plot_cfg.out_name}")
+    fig.savefig(out_name, dpi=plot_cfg.dpi, bbox_inches="tight")
+    ok(f"Saved: {out_name}")
+
+
+@hydra.main(config_path="../conf", config_name="plot", version_base=None)
+def main(cfg: DictConfig):
+    info(OmegaConf.to_yaml(cfg))
+
+    plot_cfg = ensure_plot_cfg(cfg)
+
+    ds = hydra.utils.instantiate(cfg.data)
+
+    # Collect points per class
+    class_ids = sorted(ds.class_params.keys()) if hasattr(ds, "class_params") else None
+    if class_ids is None:
+        raise RuntimeError("Dataset must expose .class_params (dict y->params) for per-class plotting.")
+
+    splits = getattr(ds, "class_splits", {})
+    if splits:
+        base, ext = plot_cfg.out_name.rsplit(".", 1)
+        for name, ids in splits.items():
+            _plot_classes(ds, plot_cfg, ids, f"{base}_{name}.{ext}")
+    else:
+        _plot_classes(ds, plot_cfg, class_ids, plot_cfg.out_name)
 
 
 if __name__ == "__main__":

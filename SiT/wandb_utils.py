@@ -31,7 +31,11 @@ def generate_run_id(exp_name):
 
 def initialize(args, entity, exp_name, project_name):
     config_dict = namespace_to_dict(args)
-    wandb.login(key=os.environ["WANDB_KEY"])
+    # Login: try with env var first, fallback to interactive
+    wandb_key = os.environ.get("WANDB_KEY")
+    if wandb_key:
+        wandb.login(key=wandb_key)
+    # else wandb will prompt for login interactively
     wandb.init(
         entity=entity,
         project=project_name,

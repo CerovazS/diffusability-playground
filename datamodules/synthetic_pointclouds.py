@@ -1,11 +1,51 @@
+"""
+Synthetic point-cloud dataset and Lightning DataModule.
+
+Overview
+--------
+This module generates labeled point-cloud samples with controllable geometry.
+Each dataset item is a tuple (x, y) where:
+  - x is a point cloud of shape [N, D] (N points in D-dimensional space)
+  - y is an integer class label in [0, num_classes-1]
+
+Key properties
+--------------
+- Permutation invariant: each sample is an unordered set of points; no positional
+  encoding or ordering is assumed.
+- Deterministic by index: for a fixed base_seed, each sample index maps to a
+  deterministic RNG stream, making the dataset stable across workers and runs.
+- Multi-family geometry: each class chooses a geometric family with its own
+  parameters, such as affine subspaces, sine-warped subspaces, or mixtures of
+  Gaussians.
+
+Config structure
+----------------
+The dataset is parameterized by dataclasses:
+  - DatasetConfig: global controls (num_samples, points_per_cloud, num_classes,
+    base_seed, device, classes)
+  - ClassParams: per-class geometry parameters, including family, intrinsic/ambient
+    dimensions (d, D), mixture components K, separation, thickness, and optional
+    tail/anisotropy/curvature settings.
+
+Lightning integration
+---------------------
+SyntheticPointCloudDataModule wraps the dataset and provides a train dataloader.
+It expects a DatasetConfig instance created by Hydra (via hydra.utils.instantiate),
+and exposes typical DataLoader knobs (batch_size, num_workers, pin_memory, drop_last).
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Dict, List, Optional, Literal, Tuple, Any
 
 import math
+import numpy as np
 import torch
-from torch.utils.data import Dataset
+from lightning import LightningDataModule
+from torch.utils.data import DataLoader, Dataset
+
+from datamodules.metrics_protocol import BaseMetricsDataModule, EvalConfig
 
 
 # Config dataclasses (Hydra)
@@ -88,9 +128,17 @@ class DatasetConfig:
     num_classes: int = 4
     base_seed: int = 1234
     device: str = "cpu"  # usually keep cpu for dataset generation; move batch to GPU in training
+    # If set, enforce an equal number of samples per class.
+    samples_per_class: Optional[int] = None
 
     # Map y -> ClassParams. If empty, will be auto-filled with defaults (same for all classes).
     classes: Dict[int, ClassParams] = field(default_factory=dict)
+    # Optional: expand additional classes from one or more sweep definitions.
+    # Each sweep entry is a dict with:
+    #   - name: optional string label for plotting
+    #   - base: dict of class params
+    #   - sweep: dict of param -> list of values (cartesian product)
+    class_sweeps: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # -------------------------
@@ -310,6 +358,11 @@ class ConditionalPointCloudDataset(Dataset):
         self.N = int(cfg.points_per_cloud)
         self.num_samples = int(cfg.num_samples)
         self.device = cfg.device
+        self.samples_per_class = cfg.samples_per_class
+        self.class_splits: Dict[str, List[int]] = {}
+
+        if cfg.class_sweeps:
+            _expand_class_sweeps(cfg, self.class_splits)
 
         if not cfg.classes:
             # Auto-fill identical classes
@@ -317,11 +370,15 @@ class ConditionalPointCloudDataset(Dataset):
         else:
             # Ensure num_classes matches if user specifies
             cfg.num_classes = len(cfg.classes)
+        if cfg.class_sweeps:
+            cfg.num_classes = len(cfg.classes)
 
         self.class_ids = sorted(cfg.classes.keys())
         self.class_params: Dict[int, ClassParams] = cfg.classes
 
     def __len__(self) -> int:
+        if self.samples_per_class is not None:
+            return int(self.samples_per_class) * len(self.class_ids)
         return self.num_samples
 
     def _sample_label(self, g: torch.Generator) -> int:
@@ -331,10 +388,19 @@ class ConditionalPointCloudDataset(Dataset):
         return self.class_ids[int(min(C - 1, math.floor(u * C)))]
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        seed = int(self.cfg.base_seed) + int(idx)
-        g = _make_generator(self.device, seed)
+        if self.samples_per_class is not None:
+            class_index = int(idx) // int(self.samples_per_class)
+            sample_index = int(idx) % int(self.samples_per_class)
+            if class_index >= len(self.class_ids):
+                raise IndexError("Sample index out of range.")
+            y = self.class_ids[class_index]
+            seed = int(self.cfg.base_seed) + class_index * int(self.samples_per_class) + sample_index
+        else:
+            seed = int(self.cfg.base_seed) + int(idx)
+            g = _make_generator(self.device, seed)
+            y = self._sample_label(g)
 
-        y = self._sample_label(g)
+        g = _make_generator(self.device, seed)
         params = self.class_params[y]
         family = _FAMILY_REGISTRY[params.family]
 
@@ -352,3 +418,308 @@ def collate_pointclouds(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Te
     x = torch.stack(xs, dim=0)  # [B, N, D] (D may differ across classes; keep D consistent in configs)
     y = torch.tensor(ys, dtype=torch.long)
     return x, y
+
+
+def _set_nested(d: Dict[str, Any], key: str, value: Any) -> None:
+    parts = key.split(".")
+    cur = d
+    for part in parts[:-1]:
+        if part not in cur or not isinstance(cur[part], dict):
+            cur[part] = {}
+        cur = cur[part]
+    cur[parts[-1]] = value
+
+
+def _dict_to_class_params(d: dict) -> ClassParams:
+    """Convert a dict (possibly from Hydra/YAML) to ClassParams, handling nested dataclasses."""
+    d = dict(d)  # shallow copy
+    # Convert nested dicts to their respective dataclasses
+    if "tail" in d and isinstance(d["tail"], dict):
+        d["tail"] = TailConfig(**d["tail"])
+    if "anisotropy" in d and isinstance(d["anisotropy"], dict):
+        d["anisotropy"] = AnisotropyConfig(**d["anisotropy"])
+    if "curvature" in d and isinstance(d["curvature"], dict):
+        d["curvature"] = CurvatureConfig(**d["curvature"])
+    return ClassParams(**d)
+
+
+def _expand_class_sweeps(cfg: DatasetConfig, splits_out: Dict[str, List[int]]) -> None:
+    next_id = max(cfg.classes.keys(), default=-1) + 1
+    for idx, sweep_def in enumerate(cfg.class_sweeps):
+        if not isinstance(sweep_def, dict) or "base" not in sweep_def or "sweep" not in sweep_def:
+            raise ValueError("Each class_sweeps entry must be a dict with keys: base, sweep.")
+
+        name = sweep_def.get("name", f"sweep_{idx}")
+        base = sweep_def["base"]
+        sweep = sweep_def["sweep"]
+
+        if isinstance(base, ClassParams):
+            base_dict = asdict(base)
+        elif isinstance(base, dict):
+            base_dict = dict(base)  # shallow copy
+        else:
+            raise TypeError("class_sweeps.base must be a dict or ClassParams.")
+
+        if not isinstance(sweep, dict):
+            raise TypeError("class_sweeps.sweep must be a dict of param -> list.")
+
+        keys = list(sweep.keys())
+        values = []
+        for key in keys:
+            v = sweep[key]
+            if isinstance(v, list):
+                values.append(v)
+            else:
+                values.append([v])
+
+        import itertools
+        combo_ids: List[int] = []
+        for combo in itertools.product(*values):
+            cfg_dict = {k: v for k, v in base_dict.items()}
+            for k, v in zip(keys, combo):
+                _set_nested(cfg_dict, k, v)
+            cfg.classes[next_id] = _dict_to_class_params(cfg_dict)
+            combo_ids.append(next_id)
+            next_id += 1
+        splits_out[name] = combo_ids
+
+
+# -------------------------
+# Lightning DataModule
+# -------------------------
+
+class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
+    def __init__(
+        self,
+        cfg: Optional[DatasetConfig] = None,
+        dataset: Optional[ConditionalPointCloudDataset] = None,
+        batch_size: int = 32,
+        val_batch_size: Optional[int] = None,
+        test_batch_size: Optional[int] = None,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        drop_last: bool = False,
+        shuffle: bool = True,
+        train_seed: Optional[int] = None,
+        val_seed: Optional[int] = None,
+        test_seed: Optional[int] = None,
+        train_samples_per_class: Optional[int] = None,
+        val_samples_per_class: Optional[int] = None,
+        test_samples_per_class: Optional[int] = None,
+        # Extra config fields for Hydra interpolations (not used directly)
+        in_channels: Optional[int] = None,
+        use_vae: bool = False,
+    ):
+        super().__init__()
+        if cfg is None and dataset is None:
+            raise TypeError("Provide either cfg (DatasetConfig) or dataset (ConditionalPointCloudDataset).")
+        if cfg is not None and not isinstance(cfg, DatasetConfig):
+            raise TypeError("cfg must be a DatasetConfig instance.")
+        if dataset is not None and not isinstance(dataset, ConditionalPointCloudDataset):
+            raise TypeError("dataset must be a ConditionalPointCloudDataset instance.")
+        self.cfg = cfg if cfg is not None else dataset.cfg
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.val_batch_size = val_batch_size
+        self.test_batch_size = test_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.train_seed = train_seed
+        self.val_seed = val_seed
+        self.test_seed = test_seed
+        self.train_samples_per_class = train_samples_per_class
+        self.val_samples_per_class = val_samples_per_class
+        self.test_samples_per_class = test_samples_per_class
+        self.train_dataset: Optional[ConditionalPointCloudDataset] = None
+        self.val_dataset: Optional[ConditionalPointCloudDataset] = None
+        self.test_dataset: Optional[ConditionalPointCloudDataset] = None
+        self.is_pointcloud = True
+        self.is_metrics_capable = True
+
+    def setup(self, stage: Optional[str] = None):
+        if self.dataset is not None:
+            self.train_dataset = self.dataset
+            return
+
+        from copy import deepcopy
+        base_cfg = deepcopy(self.cfg)
+        train_seed = self.train_seed if self.train_seed is not None else base_cfg.base_seed
+        val_seed = self.val_seed if self.val_seed is not None else base_cfg.base_seed + 1
+        test_seed = self.test_seed if self.test_seed is not None else base_cfg.base_seed + 2
+
+        train_spc = self.train_samples_per_class if self.train_samples_per_class is not None else base_cfg.samples_per_class
+        val_spc = self.val_samples_per_class if self.val_samples_per_class is not None else base_cfg.samples_per_class
+        test_spc = self.test_samples_per_class if self.test_samples_per_class is not None else base_cfg.samples_per_class
+
+        train_cfg = replace(base_cfg, base_seed=train_seed, samples_per_class=train_spc)
+        val_cfg = replace(base_cfg, base_seed=val_seed, samples_per_class=val_spc)
+        test_cfg = replace(base_cfg, base_seed=test_seed, samples_per_class=test_spc)
+
+        self.train_dataset = ConditionalPointCloudDataset(train_cfg)
+        self.val_dataset = ConditionalPointCloudDataset(val_cfg)
+        self.test_dataset = ConditionalPointCloudDataset(test_cfg)
+
+    def train_dataloader(self):
+        if self.train_dataset is None:
+            raise RuntimeError("Call setup() before requesting dataloaders.")
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            drop_last=self.drop_last,
+            collate_fn=collate_pointclouds,
+        )
+
+    def val_dataloader(self):
+        if self.val_dataset is None:
+            return None
+        batch_size = self.val_batch_size or self.batch_size
+        return DataLoader(
+            self.val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            drop_last=False,
+            collate_fn=collate_pointclouds,
+        )
+
+    def test_dataloader(self):
+        if self.test_dataset is None:
+            return None
+        batch_size = self.test_batch_size or self.batch_size
+        return DataLoader(
+            self.test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            drop_last=False,
+            collate_fn=collate_pointclouds,
+        )
+
+    # -------------------------
+    # Metrics Interface (BaseMetricsDataModule)
+    # -------------------------
+
+    def get_eval_config(self) -> EvalConfig:
+        """Return evaluation configuration for point cloud metrics."""
+        dataset = self.val_dataset or self.train_dataset
+        if dataset is None:
+            raise RuntimeError("Call setup() before requesting eval config.")
+        
+        samples_per_class = dataset.samples_per_class
+        if samples_per_class is None:
+            raise ValueError("samples_per_class must be set for point-cloud metrics.")
+        
+        return EvalConfig(
+            class_ids=dataset.class_ids,
+            samples_per_class=samples_per_class,
+            sample_shape=(dataset.N, self.cfg.classes[dataset.class_ids[0]].D),
+            num_classes=len(dataset.class_ids),
+            needs_decoding=False,
+        )
+
+    def collect_real_samples_by_class(
+        self,
+        split: str,
+        samples_per_class: int,
+        batch_size: int = 64,
+    ) -> Dict[int, np.ndarray]:
+        """
+        Collect real point cloud samples from the dataset, organized by class.
+        
+        Args:
+            split: "train", "val", or "test"
+            samples_per_class: number of samples to collect per class
+            batch_size: batch size for loading
+            
+        Returns:
+            Dict mapping class_id -> numpy array of shape [N_samples, N_points, D]
+        """
+        dataset = getattr(self, f"{split}_dataset", None)
+        if dataset is None:
+            raise ValueError(f"No {split} dataset available.")
+        
+        loader = DataLoader(
+            dataset,
+            batch_size=min(batch_size, samples_per_class),
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collate_pointclouds,
+            drop_last=False,
+        )
+
+        clouds: Dict[int, List[np.ndarray]] = {cid: [] for cid in dataset.class_ids}
+        counts: Dict[int, int] = {cid: 0 for cid in dataset.class_ids}
+
+        for xb, yb in loader:
+            for i in range(xb.size(0)):
+                y = int(yb[i].item())
+                if counts[y] >= samples_per_class:
+                    continue
+                clouds[y].append(xb[i].cpu().numpy())
+                counts[y] += 1
+            if all(c >= samples_per_class for c in counts.values()):
+                break
+
+        return {k: np.stack(v, axis=0) for k, v in clouds.items()}
+
+    def compute_metrics(
+        self,
+        real_samples: Dict[int, np.ndarray],
+        generated_samples: Dict[int, np.ndarray],
+        split: str,
+    ) -> Dict[str, float]:
+        """
+        Compute point cloud metrics: SWD and MMD for each class.
+        
+        Args:
+            real_samples: Dict mapping class_id -> real point clouds [N, points, D]
+            generated_samples: Dict mapping class_id -> generated point clouds [N, points, D]
+            split: "val" or "test" for metric naming
+            
+        Returns:
+            Dict of metric_name -> metric_value
+        """
+        from utils.pointcloud_metrics import (
+            mmd_rbf_from_distance_matrices,
+            pairwise_chamfer_matrix,
+            sliced_wasserstein_distance,
+        )
+        
+        metrics: Dict[str, float] = {}
+        
+        for class_id in real_samples.keys():
+            if class_id not in generated_samples:
+                continue
+                
+            real = real_samples[class_id]
+            gen = generated_samples[class_id]
+
+            # Flatten for SWD (all points from all clouds)
+            real_points = real.reshape(-1, real.shape[-1])
+            gen_points = gen.reshape(-1, gen.shape[-1])
+
+            swd = sliced_wasserstein_distance(
+                real_points,
+                gen_points,
+                num_projections=256,
+                seed=0,
+            )
+
+            # Chamfer-based MMD
+            D_xx = pairwise_chamfer_matrix(real, real)
+            D_yy = pairwise_chamfer_matrix(gen, gen)
+            D_xy = pairwise_chamfer_matrix(real, gen)
+            gamma = 1.0 / (float(np.median(D_xy)) + 1e-8)
+            mmd = mmd_rbf_from_distance_matrices(D_xx, D_yy, D_xy, gamma=gamma)
+
+            metrics[f"{split}/swd/class_{class_id}"] = float(swd)
+            metrics[f"{split}/mmd/class_{class_id}"] = float(mmd)
+
+        return metrics
