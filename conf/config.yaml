@@ -1,13 +1,12 @@
 defaults:
-  - dataset: synth_pc
+  - data: image_folder
+  - model: sit_xl_2
+  - trainer: sit_trainer
+  - _self_
 
-plot:
-  max_points_per_class: 05000
-  projection: dims        # pca | dims
-  dim0: 0
-  dim1: 1
-  kde_levels: 20
-  kde_thresh: 0.0
-  cmap: rocket_r
-  out_name: synth_pointclouds_kde.png
-  dpi: 200
+ckpt: null
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

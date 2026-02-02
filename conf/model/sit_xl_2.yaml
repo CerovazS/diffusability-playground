@@ -1,0 +1,12 @@
+name: SiT-XL/2
+image_size: ${data.image_size}
+num_classes: 1000
+cfg_scale: 4.0
+vae: ema
+
+transport:
+  path_type: Linear
+  prediction: velocity
+  loss_weight: null
+  train_eps: null
+  sample_eps: null

@@ -1,0 +1,6 @@
+_target_: SiT.train.ImageFolderDataModule
+
+data_path: data
+image_size: 256
+pin_memory: true
+drop_last: true

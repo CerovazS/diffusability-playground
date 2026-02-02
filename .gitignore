@@ -1,6 +1,7 @@
 .venv/
 outputs/
-SiT/
 __pycache__/
 *.pyc
 .vscode/
+agent.md
+media_outputs/

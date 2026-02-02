@@ -10,7 +10,8 @@
 
 ## Quick Context
 - **Env/deps:** use Astral `uv` (`uv add` only, no `pip install`).
-- **Training/config:** Hydra-driven experiments and configs.
+- **Training/config:** Hydra-driven experiments; main training config is `conf/config.yaml` with groups under `conf/data/`, `conf/model/`, `conf/trainer/`.
+- **Plotting:** `utils/plot_distribution.py` uses `conf/plot.yaml` and `conf/data/synth_pc.yaml`.
 - **Docs:** `https://docs.astral.sh/uv/` and `https://hydra.cc/docs/intro/`.
 - **Maintenance:** after each operation, update this README to reflect new changes or fix outdated info.
 

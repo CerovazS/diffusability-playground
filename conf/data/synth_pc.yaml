@@ -1,5 +1,5 @@
 # conf/dataset/synth_pc.yaml
-_target_: synthetic_pointclouds.ConditionalPointCloudDataset
+_target_: datamodules.synthetic_pointclouds.ConditionalPointCloudDataset
 
 cfg:
   num_samples: 100000
@@ -13,8 +13,8 @@ cfg:
       family: affine_subspace
       d: 2
       D: 2
-      K: 4
-      separation: 6.0
+      K: 16
+      separation: 20.0
       thickness: 0.05
       mode_weights: null
       orientation_per_mode: true
@@ -22,6 +22,9 @@ cfg:
         kind: gauss
       anisotropy:
         enabled: false
+        min_scale: 0.5
+        max_scale: 20.0
+        permute_per_mode: false
       curvature:
         enabled: false
 

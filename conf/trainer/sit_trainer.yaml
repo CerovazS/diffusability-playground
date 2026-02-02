@@ -1,0 +1,19 @@
+results_dir: results
+epochs: 1400
+global_batch_size: 256
+global_seed: 0
+num_workers: 4
+log_every: 100
+ckpt_every: 50000
+sample_every: 10000
+wandb: false
+
+# Optimizer
+lr: 1.0e-4
+weight_decay: 0.0
+
+# Lightning Trainer
+accelerator: gpu
+devices: auto
+strategy: ddp
+precision: 32

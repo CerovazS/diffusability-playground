@@ -2,8 +2,8 @@
 # Usage:
 #   python plot_synth_pc.py dataset=synth_pc plot.max_points_per_class=20000
 #
-# Expects your dataset config under conf/dataset/synth_pc.yaml (as in previous message)
-# and a conf/config.yaml with defaults including dataset=synth_pc.
+# Expects your dataset config under conf/data/synth_pc.yaml
+# and a conf/plot.yaml with defaults including data=synth_pc.
 
 import math
 from dataclasses import dataclass
@@ -19,7 +19,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from synthetic_pointclouds import collate_pointclouds
+from datamodules.synthetic_pointclouds import collate_pointclouds
 
 
 @dataclass
@@ -70,13 +70,13 @@ def ensure_plot_cfg(cfg: DictConfig) -> PlotConfig:
     return PlotConfig(**OmegaConf.to_container(merged, resolve=True))
 
 
-@hydra.main(config_path="conf", config_name="config", version_base=None)
+@hydra.main(config_path="../conf", config_name="plot", version_base=None)
 def main(cfg: DictConfig):
     info(OmegaConf.to_yaml(cfg))
 
     plot_cfg = ensure_plot_cfg(cfg)
 
-    ds = hydra.utils.instantiate(cfg.dataset)
+    ds = hydra.utils.instantiate(cfg.data)
     dl = DataLoader(
         ds,
         batch_size=32,
