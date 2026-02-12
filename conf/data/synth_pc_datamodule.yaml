@@ -21,6 +21,6 @@ train_seed: 1234
 val_seed: 2345
 test_seed: 3456
 
-train_samples_per_class: 5000
+train_samples_per_class: 10000
 val_samples_per_class: 2000
 test_samples_per_class: 2000

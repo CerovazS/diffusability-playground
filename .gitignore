@@ -5,3 +5,6 @@ __pycache__/
 .vscode/
 agent.md
 media_outputs/
+logs/
+wandb/
+AGENTS.override.md

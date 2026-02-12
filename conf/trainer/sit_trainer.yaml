@@ -6,9 +6,13 @@ num_workers: 4
 log_every: 100
 ckpt_every: 50000
 sample_every: 10000
-wandb: true
+use_wandb: true
 wandb_entity: ar_spectra
 wandb_project: diffusion-playground
+
+# Validation
+val_check_interval: null  # validate every N training steps (null = every epoch)
+num_sanity_val_steps: 0   # skip sanity check (validation is slow due to sampling)
 
 # Optimizer
 lr: 1.0e-4
@@ -16,6 +20,6 @@ weight_decay: 0.0
 
 # Lightning Trainer
 accelerator: gpu
-devices: auto
+devices: 1
 strategy: ddp
 precision: 32

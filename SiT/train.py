@@ -22,6 +22,7 @@ import torch.distributed as dist
 from lightning import LightningModule, Trainer, seed_everything
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from diffusers.models import AutoencoderKL
 from models import SiT_models
@@ -87,6 +88,9 @@ class SiTLightningModule(LightningModule):
         else:
             latent_size = int(getattr(cfg.model, "input_size", 1))
         self.latent_size = latent_size
+
+        if is_main_process():
+            info(f"Model config: num_classes={cfg.model.num_classes}, in_channels={cfg.model.in_channels}")
 
         self.model = SiT_models[cfg.model.name](
             input_size=latent_size,
@@ -209,7 +213,7 @@ class SiTLightningModule(LightningModule):
                     f"(step={step:07d}) Train Loss: {avg_loss_value:.4f}, "
                     f"Train Steps/Sec: {steps_per_sec:.2f}"
                 )
-                if self.cfg.trainer.wandb:
+                if self.cfg.trainer.use_wandb:
                     wandb_utils.log(
                         {"train loss": avg_loss_value, "train steps/sec": steps_per_sec},
                         step=step,
@@ -222,8 +226,42 @@ class SiTLightningModule(LightningModule):
         if step > 0 and step % self.cfg.trainer.sample_every == 0 and self.use_vae:
             self._sample_and_log(step)
 
+    def validation_step(self, batch, batch_idx):
+        """
+        Validation step - computes loss on validation batch.
+        
+        Metrics are computed in on_validation_epoch_end via sampling.
+        """
+        x, y = batch
+        # Debug: check label range
+        if y.max() >= self.cfg.model.num_classes:
+            raise ValueError(
+                f"Label out of range: max(y)={y.max().item()}, "
+                f"num_classes={self.cfg.model.num_classes}"
+            )
+        if self.use_vae:
+            with torch.no_grad():
+                x = self.vae.encode(x).latent_dist.sample().mul_(0.18215)
+        model_kwargs = dict(y=y)
+        loss_dict = self.transport.training_losses(self.model, x, model_kwargs)
+        loss = loss_dict["loss"].mean()
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        return loss
+
     def on_validation_epoch_end(self):
         self._run_metrics(split="val")
+
+    def test_step(self, batch, batch_idx):
+        """Test step - computes loss on test batch."""
+        x, y = batch
+        if self.use_vae:
+            with torch.no_grad():
+                x = self.vae.encode(x).latent_dist.sample().mul_(0.18215)
+        model_kwargs = dict(y=y)
+        loss_dict = self.transport.training_losses(self.model, x, model_kwargs)
+        loss = loss_dict["loss"].mean()
+        self.log("test_loss", loss, prog_bar=True, sync_dist=True)
+        return loss
 
     def on_test_epoch_end(self):
         self._run_metrics(split="test")
@@ -254,24 +292,31 @@ class SiTLightningModule(LightningModule):
                 info(f"Skipping metrics for {split}: {e}")
             return
         
+        samples_per_class = eval_config.samples_per_class
+        
+        if is_main_process():
+            info(f"Running {split} metrics (samples_per_class={samples_per_class}, mode={self.sampling_mode})...")
+        
         # Collect real samples using the datamodule's method
         real_samples = dm.collect_real_samples_by_class(
             split=split,
-            samples_per_class=eval_config.samples_per_class,
+            samples_per_class=samples_per_class,
         )
         
         # Generate samples using the generic method
         gen_samples = self._generate_samples_by_class(
             class_ids=eval_config.class_ids,
-            samples_per_class=eval_config.samples_per_class,
+            samples_per_class=samples_per_class,
             sample_shape=eval_config.sample_shape,
             needs_decoding=eval_config.needs_decoding,
         )
         
         # Compute metrics using the datamodule's method
+        if is_main_process():
+            info("Computing metrics (SWD, MMD)...")
         metrics = dm.compute_metrics(real_samples, gen_samples, split)
         
-        if self.cfg.trainer.wandb:
+        if self.cfg.trainer.use_wandb:
             wandb_utils.log(metrics, step=self.global_step)
         
         if is_main_process():
@@ -341,6 +386,14 @@ class SiTLightningModule(LightningModule):
         """
         gen = {cid: [] for cid in class_ids}
         sample_fn = self._get_sample_fn()
+        
+        total_samples = len(class_ids) * samples_per_class
+        pbar = tqdm(
+            total=total_samples,
+            desc=f"Generating samples ({self.sampling_mode})",
+            disable=not is_main_process(),
+            leave=False,
+        )
 
         for class_id in class_ids:
             remaining = samples_per_class
@@ -370,7 +423,9 @@ class SiTLightningModule(LightningModule):
 
                 gen[class_id].append(samples.cpu().numpy())
                 remaining -= batch
-
+                pbar.update(batch)
+        
+        pbar.close()
         return {k: np.concatenate(v, axis=0) for k, v in gen.items()}
 
     def _sample_and_log(self, step):
@@ -389,7 +444,7 @@ class SiTLightningModule(LightningModule):
                 gathered = self.all_gather(samples)
                 samples = gathered.reshape(-1, *samples.shape[1:])
 
-        if self.cfg.trainer.wandb and is_main_process():
+        if self.cfg.trainer.use_wandb and is_main_process():
             wandb_utils.log_image(samples, step)
         if is_main_process():
             info("Generating EMA samples done.")
@@ -451,7 +506,7 @@ def main(cfg: DictConfig):
     if is_main_process():
         info(f"Experiment directory created at {experiment_dir}")
 
-    if cfg.trainer.wandb and is_main_process():
+    if cfg.trainer.use_wandb and is_main_process():
         entity = cfg.trainer.wandb_entity
         project = cfg.trainer.wandb_project
         wandb_utils.initialize(OmegaConf.to_container(cfg, resolve=True), entity, experiment_name, project)
@@ -468,6 +523,10 @@ def main(cfg: DictConfig):
 
     from lightning.pytorch.callbacks import ModelCheckpoint
 
+    # Validation configuration
+    val_check_interval = getattr(cfg.trainer, "val_check_interval", None)
+    num_sanity_val_steps = getattr(cfg.trainer, "num_sanity_val_steps", 0)  # Skip sanity check by default
+    
     trainer = Trainer(
         max_epochs=cfg.trainer.epochs,
         accelerator=cfg.trainer.accelerator,
@@ -478,6 +537,8 @@ def main(cfg: DictConfig):
         logger=False,
         enable_checkpointing=True,
         default_root_dir=experiment_dir,
+        val_check_interval=val_check_interval,
+        num_sanity_val_steps=num_sanity_val_steps,
         callbacks=[
             ModelCheckpoint(
                 dirpath=checkpoint_dir,

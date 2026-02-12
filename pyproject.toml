@@ -22,6 +22,7 @@ dependencies = [
   "nvitop>=1.6.2",
   "pot>=0.9.6.post1",
   "scipy>=1.17.0",
+  "faiss-gpu-cu12>=1.13.2",
 ]
 
 [tool.uv.sources]

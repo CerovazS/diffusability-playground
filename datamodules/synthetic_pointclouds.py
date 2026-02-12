@@ -361,7 +361,9 @@ class ConditionalPointCloudDataset(Dataset):
         self.samples_per_class = cfg.samples_per_class
         self.class_splits: Dict[str, List[int]] = {}
 
-        if cfg.class_sweeps:
+        # Only expand class_sweeps if classes haven't been populated yet
+        # This prevents re-expansion when creating val/test datasets from a copied config
+        if cfg.class_sweeps and not cfg.classes:
             _expand_class_sweeps(cfg, self.class_splits)
 
         if not cfg.classes:
@@ -369,8 +371,6 @@ class ConditionalPointCloudDataset(Dataset):
             cfg.classes = {i: ClassParams() for i in range(cfg.num_classes)}
         else:
             # Ensure num_classes matches if user specifies
-            cfg.num_classes = len(cfg.classes)
-        if cfg.class_sweeps:
             cfg.num_classes = len(cfg.classes)
 
         self.class_ids = sorted(cfg.classes.keys())
@@ -539,8 +539,23 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         self.is_metrics_capable = True
 
     def setup(self, stage: Optional[str] = None):
+        # If a pre-built dataset was passed, use its config to create val/test datasets
         if self.dataset is not None:
             self.train_dataset = self.dataset
+            # Create val/test datasets from the same config with different seeds
+            from copy import deepcopy
+            base_cfg = deepcopy(self.dataset.cfg)
+            
+            val_seed = self.val_seed if self.val_seed is not None else base_cfg.base_seed + 1
+            test_seed = self.test_seed if self.test_seed is not None else base_cfg.base_seed + 2
+            val_spc = self.val_samples_per_class if self.val_samples_per_class is not None else base_cfg.samples_per_class
+            test_spc = self.test_samples_per_class if self.test_samples_per_class is not None else base_cfg.samples_per_class
+            
+            val_cfg = replace(base_cfg, base_seed=val_seed, samples_per_class=val_spc)
+            test_cfg = replace(base_cfg, base_seed=test_seed, samples_per_class=test_spc)
+            
+            self.val_dataset = ConditionalPointCloudDataset(val_cfg)
+            self.test_dataset = ConditionalPointCloudDataset(test_cfg)
             return
 
         from copy import deepcopy
@@ -560,6 +575,10 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         self.train_dataset = ConditionalPointCloudDataset(train_cfg)
         self.val_dataset = ConditionalPointCloudDataset(val_cfg)
         self.test_dataset = ConditionalPointCloudDataset(test_cfg)
+        
+        # Log dataset info
+        print(f"[DataModule] train class_ids={self.train_dataset.class_ids}, num_classes={train_cfg.num_classes}")
+        print(f"[DataModule] val class_ids={self.val_dataset.class_ids}")
 
     def train_dataloader(self):
         if self.train_dataset is None:
@@ -576,7 +595,12 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
 
     def val_dataloader(self):
         if self.val_dataset is None:
-            return None
+            raise RuntimeError(
+                "val_dataset is None. Ensure setup() was called. "
+                f"train_dataset={self.train_dataset is not None}, "
+                f"dataset={self.dataset is not None}, "
+                f"cfg={self.cfg is not None}"
+            )
         batch_size = self.val_batch_size or self.batch_size
         return DataLoader(
             self.val_dataset,
@@ -590,7 +614,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
 
     def test_dataloader(self):
         if self.test_dataset is None:
-            return None
+            raise RuntimeError("test_dataset is None. Ensure setup() was called.")
         batch_size = self.test_batch_size or self.batch_size
         return DataLoader(
             self.test_dataset,
@@ -678,6 +702,8 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         """
         Compute point cloud metrics: SWD and MMD for each class.
         
+        Uses GPU-accelerated FAISS for Chamfer distance computation.
+        
         Args:
             real_samples: Dict mapping class_id -> real point clouds [N, points, D]
             generated_samples: Dict mapping class_id -> generated point clouds [N, points, D]
@@ -687,17 +713,18 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             Dict of metric_name -> metric_value
         """
         from utils.pointcloud_metrics import (
-            mmd_rbf_from_distance_matrices,
-            pairwise_chamfer_matrix,
+            mmd_rbf_from_chamfer_faiss,
             sliced_wasserstein_distance,
         )
+        from utils.colorfull_logger import info
         
         metrics: Dict[str, float] = {}
+        class_ids = sorted(set(real_samples.keys()) & set(generated_samples.keys()))
+        n_classes = len(class_ids)
         
-        for class_id in real_samples.keys():
-            if class_id not in generated_samples:
-                continue
-                
+        for idx, class_id in enumerate(class_ids):
+            info(f"[{idx+1}/{n_classes}] Computing metrics for class {class_id}...")
+            
             real = real_samples[class_id]
             gen = generated_samples[class_id]
 
@@ -705,6 +732,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             real_points = real.reshape(-1, real.shape[-1])
             gen_points = gen.reshape(-1, gen.shape[-1])
 
+            info(f"  → SWD ({real_points.shape[0]} vs {gen_points.shape[0]} points)...")
             swd = sliced_wasserstein_distance(
                 real_points,
                 gen_points,
@@ -712,14 +740,18 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
                 seed=0,
             )
 
-            # Chamfer-based MMD
-            D_xx = pairwise_chamfer_matrix(real, real)
-            D_yy = pairwise_chamfer_matrix(gen, gen)
-            D_xy = pairwise_chamfer_matrix(real, gen)
-            gamma = 1.0 / (float(np.median(D_xy)) + 1e-8)
-            mmd = mmd_rbf_from_distance_matrices(D_xx, D_yy, D_xy, gamma=gamma)
+            # Chamfer-based MMD using GPU-accelerated FAISS
+            info(f"  → MMD-Chamfer ({real.shape[0]} vs {gen.shape[0]} clouds)...")
+            mmd = mmd_rbf_from_chamfer_faiss(
+                real, gen,
+                gamma=None,  # auto-select
+                downsample=1024,
+                base_seed=class_id,
+                verbose=False,  # Already logging at class level
+            )
 
             metrics[f"{split}/swd/class_{class_id}"] = float(swd)
             metrics[f"{split}/mmd/class_{class_id}"] = float(mmd)
+            info(f"  ✓ SWD={swd:.6f}, MMD={mmd:.6f}")
 
         return metrics

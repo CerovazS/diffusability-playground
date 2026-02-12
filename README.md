@@ -13,6 +13,7 @@
 - **SiT model flags:** `use_pos_embed` and `use_patch_embed` allow disabling positional embeddings and patchifying (e.g. for permutation-invariant sequences).
 - **Synthetic sweeps:** `conf/data/synth_pc.yaml` supports `class_sweeps` to expand a base class into multiple classes via a parameter grid.
 - **Point-cloud training:** use `conf/data/synth_pc_datamodule.yaml` (wraps `conf/data/synth_pc.yaml`) and set `conf/model/mini_sit.yaml` for non-patchified, no-PE models.
+- **Validation:** periodic validation with metrics computation; configure `trainer.val_check_interval` (steps) and `trainer.val_samples_per_class`.
 - **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
 - **Point-cloud metrics:** SWD and MMD-RBF (Chamfer) computed via `SyntheticPointCloudDataModule.compute_metrics()`, logged to wandb per class.
 - **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.

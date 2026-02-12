@@ -9,7 +9,7 @@ defaults:
 # =============================================================================
 # Ambient/embedding dimension for point clouds (D in class params)
 # This should be consistent across data config and model config
-ambient_dim: 2
+ambient_dim: 16
 
 ckpt: null
 
