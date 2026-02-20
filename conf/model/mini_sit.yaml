@@ -1,6 +1,7 @@
 name: mini-SiT
-num_classes: ${data.dataset.cfg.num_classes}
-cfg_scale: 4.0
+# Auto-resolved from datamodule/dataset at runtime in SiT/train.py
+num_classes: null
+cfg_scale: 2.0
 vae: ema
 # Input channels from datamodule (which derives it from dataset.ambient_dim)
 in_channels: ${data.in_channels}

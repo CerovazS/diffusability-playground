@@ -1,6 +1,7 @@
 name: SiT-XL/2
 image_size: ${data.image_size}
-num_classes: ${data.num_classes}
+# Auto-resolved from datamodule/dataset at runtime in SiT/train.py
+num_classes: null
 cfg_scale: 4.0
 vae: ema
 in_channels: ${data.in_channels}

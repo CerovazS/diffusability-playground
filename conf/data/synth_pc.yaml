@@ -7,11 +7,28 @@ cfg:
   _convert_: all
   num_samples: 10000
   points_per_cloud: 128
-  # num_classes is auto-computed from class_sweeps (4 separations × 2 thicknesses = 8)
-  num_classes: 8
+  # num_classes is auto-computed from class_sweeps/classes and auto-resolved in train wiring.
   base_seed: 1234
   device: cpu  # Must be cpu for DataLoader multiprocessing; GPU transfer happens in training loop
   samples_per_class: null
+
+
+  class_sweeps:
+    - name: sweep_affine_sep
+      base:
+        family: affine_subspace
+        d: 4  # intrinsic dimension (must be <= D)
+        D: ${ambient_dim}
+        K: 8
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        separation: [2.0, 8.0, 20.0]
+        thickness: [0.02, 0.1, 0.5]
 
   # classes:
   #   0:
@@ -22,7 +39,6 @@ cfg:
   #     separation: 20.0
   #     thickness: 0.05
   #     mode_weights: null
-  #     orientation_per_mode: true
   #     tail:
   #       kind: gauss
   #     anisotropy:
@@ -41,7 +57,6 @@ cfg:
   #     separation: 6.0
   #     thickness: 0.05
   #     mode_weights: null
-  #     orientation_per_mode: true
   #     tail:
   #       kind: student_t
   #       student_df: 3.0
@@ -64,7 +79,6 @@ cfg:
   #     thickness: 0.02
   #     mog_diag_cov: 1.0
   #     mode_weights: null
-  #     orientation_per_mode: true
   #     tail:
   #       kind: gauss
   #     anisotropy:
@@ -76,22 +90,3 @@ cfg:
   # Each entry defines a base class and a parameter grid (cartesian product).
   # NOTE: D uses global ambient_dim for consistency with model input channels
   # NOTE: d (intrinsic dim) must be <= D (ambient dim)
-  class_sweeps:
-    - name: sweep_affine_sep
-      base:
-        family: affine_subspace
-        d: 1  # intrinsic dimension (must be <= D)
-        D: ${ambient_dim}
-        K: 8
-        separation: 4.0
-        thickness: 0.05
-        orientation_per_mode: true
-        tail:
-          kind: gauss
-        anisotropy:
-          enabled: false
-        curvature:
-          enabled: false
-      sweep:
-        separation: [2.0,]
-        thickness: [0.02]

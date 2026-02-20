@@ -8,6 +8,7 @@ import argparse
 from collections.abc import Mapping
 import hashlib
 import math
+from typing import Iterable
 
 
 def is_main_process():
@@ -55,6 +56,30 @@ def log_image(sample, step=None):
     if is_main_process():
         sample = array2grid(sample)
         wandb.log({f"samples": wandb.Image(sample), "train_step": step})
+
+
+def log_artifact_files(
+    name: str,
+    artifact_type: str,
+    files: Iterable[tuple[str, str]],
+    metadata: dict | None = None,
+    aliases: list[str] | None = None,
+):
+    if not is_main_process():
+        return False
+    if wandb.run is None:
+        return False
+
+    artifact = wandb.Artifact(name=name, type=artifact_type, metadata=metadata or {})
+    added_files = 0
+    for local_path, artifact_path in files:
+        if os.path.exists(local_path):
+            artifact.add_file(local_path, name=artifact_path)
+            added_files += 1
+    if added_files == 0:
+        return False
+    wandb.log_artifact(artifact, aliases=aliases or [])
+    return True
 
 
 def array2grid(x):

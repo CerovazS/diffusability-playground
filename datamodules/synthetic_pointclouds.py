@@ -108,11 +108,6 @@ class ClassParams:
     # Optional: mode weights (if None -> uniform)
     mode_weights: Optional[List[float]] = None
 
-    # Optional: control orientation randomness
-    # If False, each class has a fixed base orientation and each mode reuses it.
-    # If True, each mode has its own random orientation.
-    orientation_per_mode: bool = True
-
     # For MoG family
     mog_diag_cov: float = 1.0  # baseline diagonal covariance (before thickness addition)
 
@@ -239,11 +234,7 @@ class AffineSubspaceMixture(PointCloudFamily):
         k = _choose_mode(K, params.mode_weights, g, device)
 
         # Orientation
-        if params.orientation_per_mode:
-            U = _random_orthonormal(D, d, g, device)
-        else:
-            # fixed per-class orientation: derive from generator but keep stable within sample
-            U = _random_orthonormal(D, d, g, device)
+        U = _random_orthonormal(D, d, g, device)
 
         # Intrinsic sample
         z = _sample_tail(params.tail.kind, N, d, g, device, params.tail)
@@ -288,7 +279,7 @@ class SineWarpSubspaceMixture(PointCloudFamily):
 
         k = _choose_mode(K, params.mode_weights, g, device)
 
-        U = _random_orthonormal(D, d, g, device) if params.orientation_per_mode else _random_orthonormal(D, d, g, device)
+        U = _random_orthonormal(D, d, g, device)
 
         z = _sample_tail(params.tail.kind, N, d, g, device, params.tail)
 
@@ -433,6 +424,8 @@ def _set_nested(d: Dict[str, Any], key: str, value: Any) -> None:
 def _dict_to_class_params(d: dict) -> ClassParams:
     """Convert a dict (possibly from Hydra/YAML) to ClassParams, handling nested dataclasses."""
     d = dict(d)  # shallow copy
+    # Backward compatibility for older configs.
+    d.pop("orientation_per_mode", None)
     # Convert nested dicts to their respective dataclasses
     if "tail" in d and isinstance(d["tail"], dict):
         d["tail"] = TailConfig(**d["tail"])
@@ -484,6 +477,56 @@ def _expand_class_sweeps(cfg: DatasetConfig, splits_out: Dict[str, List[int]]) -
         splits_out[name] = combo_ids
 
 
+def _deep_update(base: Dict[str, Any], updates: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Recursively merge nested dicts without mutating inputs."""
+    from copy import deepcopy
+    out = deepcopy(base)
+    if updates is None:
+        return out
+
+    for k, v in updates.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_update(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _default_pointcloud_metrics_cfg() -> Dict[str, Any]:
+    return {
+        "swd": {
+            "enabled": True,
+            "num_projections": 256,
+            "seed": 0,
+        },
+        "energy_distance": {
+            "enabled": True,
+            "distance": "chamfer_l2",
+            "max_clouds": 256,
+            "downsample_points": None,
+            "seed": 0,
+        },
+        "feature_mmd": {
+            "enabled": True,
+            "max_clouds": 512,
+            "seed": 0,
+            "gamma": None,
+            "gamma_scale": 1.0,
+            "unbiased": True,
+            "standardize_features": True,
+            "include_centroid": True,
+            "include_log_eigvals": True,
+            "include_participation_ratio": True,
+            "include_thickness": True,
+            "include_kurtosis": True,
+            "include_curvature": True,
+            "thickness_tail_fraction": 0.25,
+            "curvature_k_neighbors": 16,
+            "eig_eps": 1e-8,
+        },
+    }
+
+
 # -------------------------
 # Lightning DataModule
 # -------------------------
@@ -509,6 +552,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         # Extra config fields for Hydra interpolations (not used directly)
         in_channels: Optional[int] = None,
         use_vae: bool = False,
+        metrics: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         if cfg is None and dataset is None:
@@ -532,6 +576,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         self.train_samples_per_class = train_samples_per_class
         self.val_samples_per_class = val_samples_per_class
         self.test_samples_per_class = test_samples_per_class
+        self.metrics_cfg = _deep_update(_default_pointcloud_metrics_cfg(), metrics)
         self.train_dataset: Optional[ConditionalPointCloudDataset] = None
         self.val_dataset: Optional[ConditionalPointCloudDataset] = None
         self.test_dataset: Optional[ConditionalPointCloudDataset] = None
@@ -700,9 +745,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         split: str,
     ) -> Dict[str, float]:
         """
-        Compute point cloud metrics: SWD and MMD for each class.
-        
-        Uses GPU-accelerated FAISS for Chamfer distance computation.
+        Compute point cloud metrics for each class.
         
         Args:
             real_samples: Dict mapping class_id -> real point clouds [N, points, D]
@@ -713,14 +756,18 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             Dict of metric_name -> metric_value
         """
         from utils.pointcloud_metrics import (
-            mmd_rbf_from_chamfer_faiss,
+            energy_distance_u_statistic_clouds,
+            mmd_rbf_invariant_features,
             sliced_wasserstein_distance,
         )
-        from utils.colorfull_logger import info
+        from utils.colorful_logger import info
         
         metrics: Dict[str, float] = {}
         class_ids = sorted(set(real_samples.keys()) & set(generated_samples.keys()))
         n_classes = len(class_ids)
+        swd_cfg = self.metrics_cfg.get("swd", {})
+        energy_cfg = self.metrics_cfg.get("energy_distance", {})
+        feature_mmd_cfg = self.metrics_cfg.get("feature_mmd", {})
         
         for idx, class_id in enumerate(class_ids):
             info(f"[{idx+1}/{n_classes}] Computing metrics for class {class_id}...")
@@ -728,30 +775,55 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             real = real_samples[class_id]
             gen = generated_samples[class_id]
 
-            # Flatten for SWD (all points from all clouds)
-            real_points = real.reshape(-1, real.shape[-1])
-            gen_points = gen.reshape(-1, gen.shape[-1])
+            if bool(swd_cfg.get("enabled", True)):
+                # Flatten for SWD (all points from all clouds)
+                real_points = real.reshape(-1, real.shape[-1])
+                gen_points = gen.reshape(-1, gen.shape[-1])
+                info(f"  → SWD ({real_points.shape[0]} vs {gen_points.shape[0]} points)...")
+                swd = sliced_wasserstein_distance(
+                    real_points,
+                    gen_points,
+                    num_projections=int(swd_cfg.get("num_projections", 256)),
+                    seed=int(swd_cfg.get("seed", 0)) + int(class_id),
+                )
+                metrics[f"{split}/swd/class_{class_id}"] = float(swd)
+                info(f"  ✓ SWD={swd:.6f}")
 
-            info(f"  → SWD ({real_points.shape[0]} vs {gen_points.shape[0]} points)...")
-            swd = sliced_wasserstein_distance(
-                real_points,
-                gen_points,
-                num_projections=256,
-                seed=0,
-            )
+            if bool(energy_cfg.get("enabled", True)):
+                info(f"  → Energy-U ({real.shape[0]} vs {gen.shape[0]} clouds)...")
+                energy = energy_distance_u_statistic_clouds(
+                    real,
+                    gen,
+                    distance=str(energy_cfg.get("distance", "chamfer_l2")),
+                    max_clouds=energy_cfg.get("max_clouds", 256),
+                    downsample_points=energy_cfg.get("downsample_points", None),
+                    seed=int(energy_cfg.get("seed", 0)) + int(class_id),
+                )
+                metrics[f"{split}/energy_u/class_{class_id}"] = float(energy)
+                info(f"  ✓ Energy-U={energy:.6f}")
 
-            # Chamfer-based MMD using GPU-accelerated FAISS
-            info(f"  → MMD-Chamfer ({real.shape[0]} vs {gen.shape[0]} clouds)...")
-            mmd = mmd_rbf_from_chamfer_faiss(
-                real, gen,
-                gamma=None,  # auto-select
-                downsample=1024,
-                base_seed=class_id,
-                verbose=False,  # Already logging at class level
-            )
-
-            metrics[f"{split}/swd/class_{class_id}"] = float(swd)
-            metrics[f"{split}/mmd/class_{class_id}"] = float(mmd)
-            info(f"  ✓ SWD={swd:.6f}, MMD={mmd:.6f}")
+            if bool(feature_mmd_cfg.get("enabled", True)):
+                info(f"  → Feature-MMD ({real.shape[0]} vs {gen.shape[0]} clouds)...")
+                mmd_feat = mmd_rbf_invariant_features(
+                    real,
+                    gen,
+                    max_clouds=feature_mmd_cfg.get("max_clouds", 512),
+                    seed=int(feature_mmd_cfg.get("seed", 0)) + int(class_id),
+                    gamma=feature_mmd_cfg.get("gamma", None),
+                    gamma_scale=float(feature_mmd_cfg.get("gamma_scale", 1.0)),
+                    unbiased=bool(feature_mmd_cfg.get("unbiased", True)),
+                    standardize_features=bool(feature_mmd_cfg.get("standardize_features", True)),
+                    include_centroid=bool(feature_mmd_cfg.get("include_centroid", True)),
+                    include_log_eigvals=bool(feature_mmd_cfg.get("include_log_eigvals", True)),
+                    include_participation_ratio=bool(feature_mmd_cfg.get("include_participation_ratio", True)),
+                    include_thickness=bool(feature_mmd_cfg.get("include_thickness", True)),
+                    include_kurtosis=bool(feature_mmd_cfg.get("include_kurtosis", True)),
+                    include_curvature=bool(feature_mmd_cfg.get("include_curvature", True)),
+                    thickness_tail_fraction=float(feature_mmd_cfg.get("thickness_tail_fraction", 0.25)),
+                    curvature_k_neighbors=int(feature_mmd_cfg.get("curvature_k_neighbors", 16)),
+                    eig_eps=float(feature_mmd_cfg.get("eig_eps", 1e-8)),
+                )
+                metrics[f"{split}/feature_mmd/class_{class_id}"] = float(mmd_feat)
+                info(f"  ✓ Feature-MMD={mmd_feat:.6f}")
 
         return metrics

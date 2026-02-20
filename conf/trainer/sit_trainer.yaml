@@ -1,5 +1,5 @@
 results_dir: results
-epochs: 20
+epochs: 100
 global_batch_size: 256
 global_seed: 0
 num_workers: 4
@@ -13,6 +13,7 @@ wandb_project: diffusion-playground
 # Validation
 val_check_interval: null  # validate every N training steps (null = every epoch)
 num_sanity_val_steps: 0   # skip sanity check (validation is slow due to sampling)
+val_metrics_seed: 0        # fixed seed for validation sampling used by metrics (null = stochastic)
 
 # Optimizer
 lr: 1.0e-4

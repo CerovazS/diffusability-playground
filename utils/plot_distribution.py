@@ -14,7 +14,10 @@ from omegaconf import DictConfig, OmegaConf
 
 import torch
 from torch.utils.data import DataLoader
-from colorfull_logger import *
+try:
+    from utils.colorful_logger import *
+except ModuleNotFoundError:
+    from colorful_logger import *
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt

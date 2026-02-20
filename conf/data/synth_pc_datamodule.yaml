@@ -9,9 +9,9 @@ _convert_: all
 in_channels: ${ambient_dim}
 use_vae: false
 
-batch_size: 32
-val_batch_size: 32
-test_batch_size: 32
+batch_size: 128
+val_batch_size: 128
+test_batch_size: 128
 num_workers: 4
 pin_memory: true
 drop_last: true
@@ -24,3 +24,36 @@ test_seed: 3456
 train_samples_per_class: 10000
 val_samples_per_class: 2000
 test_samples_per_class: 2000
+
+metrics:
+  swd:
+    enabled: true
+    num_projections: 512
+    seed: 0
+
+  energy_distance:
+    enabled: true
+    distance: chamfer_l2
+    max_clouds: 256
+    downsample_points: 128
+    seed: 0
+
+  feature_mmd:
+    enabled: true
+    max_clouds: 512
+    seed: 0
+    # Fixed gamma for epoch-to-epoch comparability (estimated from val real features)
+    # Class-wise heuristic range was ~[1.5e-3, 2.2e-2], this is a log-scale compromise.
+    gamma: 0.006
+    gamma_scale: 1.0
+    unbiased: true
+    standardize_features: false
+    include_centroid: true
+    include_log_eigvals: true
+    include_participation_ratio: true
+    include_thickness: true
+    include_kurtosis: true
+    include_curvature: true
+    thickness_tail_fraction: 0.25
+    curvature_k_neighbors: 16
+    eig_eps: 1.0e-8

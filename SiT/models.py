@@ -391,10 +391,10 @@ def SiT_S_8(**kwargs):
 
 def mini_SiT(**kwargs):
     return SiT(
-        depth=4,
-        hidden_size=96,  # Changed from 64 to 96 (divisible by 3)
+        depth=6,
+        hidden_size=96,  
         patch_size=1,
-        num_heads=3,
+        num_heads=8,
         use_pos_embed=False,
         use_patch_embed=False,
         **kwargs

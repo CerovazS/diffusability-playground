@@ -13,10 +13,19 @@
 - **SiT model flags:** `use_pos_embed` and `use_patch_embed` allow disabling positional embeddings and patchifying (e.g. for permutation-invariant sequences).
 - **Synthetic sweeps:** `conf/data/synth_pc.yaml` supports `class_sweeps` to expand a base class into multiple classes via a parameter grid.
 - **Point-cloud training:** use `conf/data/synth_pc_datamodule.yaml` (wraps `conf/data/synth_pc.yaml`) and set `conf/model/mini_sit.yaml` for non-patchified, no-PE models.
+- **Class count auto-resolve:** `model.num_classes` is auto-resolved at runtime from the instantiated datamodule/dataset before model construction.
 - **Validation:** periodic validation with metrics computation; configure `trainer.val_check_interval` (steps) and `trainer.val_samples_per_class`.
+- **Validation reproducibility:** set `trainer.val_metrics_seed` to use fixed-noise validation sampling for stable metric curves (`null` keeps stochastic sampling).
 - **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
-- **Point-cloud metrics:** SWD and MMD-RBF (Chamfer) computed via `SyntheticPointCloudDataModule.compute_metrics()`, logged to wandb per class.
+- **Point-cloud metrics:** SWD + Energy Distance (U-statistic on cloud distances) + Feature-MMD (RBF on invariant cloud features), logged to wandb per class.
+- **Metric hyperparameters:** controlled in `conf/data/synth_pc_datamodule.yaml` under `metrics` (enable flags, SWD projections, Energy cloud-distance settings, Feature-MMD feature toggles/kernel params).
+- **Feature-MMD tracking:** keep `metrics.feature_mmd.gamma` fixed across validation epochs for comparable curves (avoid `gamma: null` when monitoring convergence over time).
 - **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.
+- **Per-class validation loss tracking:** each run writes `results/<run>/metrics/class_registry.json` (class id -> sweep/params mapping) and appends `results/<run>/metrics/val_loss_by_class.jsonl` (time series by step/epoch).
+- **W&B metrics artifacts:** metric files are uploaded as artifact entries under `metrics/class_registry.json` and `metrics/val_loss_by_class.jsonl`.
+- **Validation generation logging:** validation/test sample generation now prints class-by-class progress lines (no tqdm hash/progress bar output).
+- **Point-cloud class params:** `orientation_per_mode` was removed from active configs/code path (old configs are ignored safely if the key is still present).
+- **Logger naming:** `utils/colorfull_logger.py` was renamed to `utils/colorful_logger.py`.
 - **Docs:** `https://docs.astral.sh/uv/` and `https://hydra.cc/docs/intro/`.
 - **Maintenance:** after each operation, update this README to reflect new changes or fix outdated info.
 
@@ -49,18 +58,13 @@ It supports multiple geometric families (affine subspaces, sine-warped subspaces
 ## Architecture Overview
 
 ```
-train.py (LightningModule)
-    │
-    ├── _run_metrics()          # Generic metrics orchestration
-    │       │
-    │       └── dm.compute_metrics()   # Delegates to DataModule
-    │
-    └── _generate_samples_by_class()   # Generic sampling (ODE/SDE)
-            │
-            └── _get_sample_fn()       # Returns ODE or SDE sampler
+SiT/train.py                 # Hydra entrypoint + Trainer wiring
+SiT/lightning_module.py      # SiTLightningModule (train/val/test hooks)
+SiT/eval_runner.py           # Metric orchestration + eval sampling/logging
+SiT/class_registry.py        # Class registry serialization helpers
 
 datamodules/
-    ├── metrics_protocol.py     # Interface: MetricsCapableDataModule, EvalConfig
-    ├── synthetic_pointclouds.py  # Implements: collect_real_samples, compute_metrics (SWD/MMD)
-    └── image_datamodule.py       # Implements: collect_real_samples, compute_metrics (placeholder for FID)
+    ├── metrics_protocol.py       # Interface: MetricsCapableDataModule, EvalConfig
+    ├── synthetic_pointclouds.py  # collect_real_samples + compute_metrics (SWD/Energy-U/Feature-MMD)
+    └── image_datamodule.py       # collect_real_samples + compute_metrics (placeholder for FID)
 ```
