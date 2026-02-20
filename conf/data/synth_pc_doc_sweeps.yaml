@@ -1,0 +1,119 @@
+_target_: datamodules.synthetic_pointclouds.ConditionalPointCloudDataset
+_convert_: all
+
+cfg:
+  _target_: datamodules.synthetic_pointclouds.DatasetConfig
+  _convert_: all
+  num_samples: 20000
+  points_per_cloud: 128
+  base_seed: 1234
+  device: cpu
+  samples_per_class: null
+
+  class_sweeps:
+    - name: sweep_affine_k
+      base:
+        family: affine_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 1
+        separation: 8.0
+        thickness: 0.02
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        K: [1, 2, 4, 8]
+
+    - name: sweep_affine_separation
+      base:
+        family: affine_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 4
+        separation: 0.0
+        thickness: 0.02
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        separation: [0.0, 2.0, 8.0, 20.0]
+
+    - name: sweep_affine_thickness
+      base:
+        family: affine_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 4
+        separation: 8.0
+        thickness: 0.02
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        thickness: [0.005, 0.02, 0.1, 0.4]
+
+    - name: sweep_tail_kind
+      base:
+        family: affine_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 4
+        separation: 8.0
+        thickness: 0.02
+        tail:
+          kind: gauss
+          student_df: 3.0
+          cauchy_clip: 8.0
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        tail.kind: [gauss, laplace, student_t, cauchy_trunc]
+
+    - name: sweep_curvature_alpha
+      base:
+        family: sine_warp_subspace
+        d: 2
+        D: ${ambient_dim}
+        K: 3
+        separation: 6.0
+        thickness: 0.02
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: true
+          alpha: 0.0
+          freq: 2.0
+      sweep:
+        curvature.alpha: [0.0, 0.2, 0.6, 1.0]
+
+    - name: sweep_mog_cov
+      base:
+        family: mog
+        d: 0
+        D: ${ambient_dim}
+        K: 4
+        separation: 8.0
+        thickness: 0.02
+        mog_diag_cov: 1.0
+        tail:
+          kind: gauss
+        anisotropy:
+          enabled: false
+        curvature:
+          enabled: false
+      sweep:
+        mog_diag_cov: [0.3, 1.0, 2.0, 4.0]

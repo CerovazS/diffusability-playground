@@ -1,0 +1,17 @@
+defaults:
+  - data: synth_pc_doc_sweeps
+  - _self_
+
+ambient_dim: 8
+
+plot:
+  max_points_per_class: 8000
+  projection: pca
+  dim0: 0
+  dim1: 1
+  kde_levels: 24
+  kde_thresh: 0.0
+  cmap: rocket_r
+  num_workers: 0
+  out_name: docs/assets/pointcloud_dataset/sweep_overview.png
+  dpi: 220

@@ -6,6 +6,7 @@
 # and a conf/plot.yaml with defaults including data=synth_pc.
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -43,6 +44,7 @@ class PlotConfig:
     kde_levels: int = 80
     kde_thresh: float = 0.0  # show all
     cmap: str = "rocket"
+    num_workers: int = 0
 
     # Output
     out_name: str = "synth_pointclouds_kde.png"
@@ -92,7 +94,7 @@ def _plot_classes(
         ds,
         batch_size=32,
         shuffle=True,
-        num_workers=4,
+        num_workers=plot_cfg.num_workers,
         collate_fn=collate_pointclouds,
         drop_last=False,
     )
@@ -191,6 +193,10 @@ def _plot_classes(
     for j in range(C, nrows * ncols):
         r, c = divmod(j, ncols)
         axes[r][c].axis("off")
+
+    out_dir = os.path.dirname(out_name)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     fig.tight_layout()
     fig.savefig(out_name, dpi=plot_cfg.dpi, bbox_inches="tight")

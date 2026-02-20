@@ -9,12 +9,17 @@
 - **Env/deps:** use Astral `uv` (`uv add` only, no `pip install`).
 - **Training/config:** Hydra-driven experiments; main training config is `conf/config.yaml` with groups under `conf/data/`, `conf/model/`, `conf/trainer/`.
 - **Plotting:** `utils/plot_distribution.py` uses `conf/plot.yaml` and `conf/data/synth_pc.yaml`.
+- **Dataset docs:** detailed synthetic dataset documentation is available at `docs/synthetic_pointcloud_dataset.md` (attributes, sweep strategies, commands, and image gallery).
+- **Plot config ambient dim:** `conf/plot.yaml` defines `ambient_dim` so `${ambient_dim}` interpolations in `conf/data/synth_pc.yaml` resolve correctly during plotting.
+- **Plot output dirs:** `utils/plot_distribution.py` now creates parent directories for `plot.out_name` automatically (e.g. `media_outputs/`).
+- **Doc plot configs:** use `conf/plot_dataset_docs.yaml` and `conf/plot_dataset_docs_anis.yaml` to generate reproducible sweep figures for documentation.
 - **DataModules:** `datamodules/synthetic_pointclouds.py` provides a Lightning DataModule around the synthetic point cloud dataset.
 - **SiT model flags:** `use_pos_embed` and `use_patch_embed` allow disabling positional embeddings and patchifying (e.g. for permutation-invariant sequences).
 - **Synthetic sweeps:** `conf/data/synth_pc.yaml` supports `class_sweeps` to expand a base class into multiple classes via a parameter grid.
+- **Current default synthetic sweep:** `conf/data/synth_pc.yaml` is set to an anisotropy-focused ablation (`sweep_affine_anis`) with `K=1`, `separation=0.0`, and `anisotropy.max_scale` sweep.
 - **Point-cloud training:** use `conf/data/synth_pc_datamodule.yaml` (wraps `conf/data/synth_pc.yaml`) and set `conf/model/mini_sit.yaml` for non-patchified, no-PE models.
 - **Class count auto-resolve:** `model.num_classes` is auto-resolved at runtime from the instantiated datamodule/dataset before model construction.
-- **Validation:** periodic validation with metrics computation; configure `trainer.val_check_interval` (steps) and `trainer.val_samples_per_class`.
+- **Validation:** periodic validation with metrics computation; configure `trainer.check_val_every_n_epoch` (epochs, default `3`) or `trainer.val_check_interval` (steps).
 - **Validation reproducibility:** set `trainer.val_metrics_seed` to use fixed-noise validation sampling for stable metric curves (`null` keeps stochastic sampling).
 - **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
 - **Point-cloud metrics:** SWD + Energy Distance (U-statistic on cloud distances) + Feature-MMD (RBF on invariant cloud features), logged to wandb per class.
@@ -23,6 +28,7 @@
 - **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.
 - **Per-class validation loss tracking:** each run writes `results/<run>/metrics/class_registry.json` (class id -> sweep/params mapping) and appends `results/<run>/metrics/val_loss_by_class.jsonl` (time series by step/epoch).
 - **W&B metrics artifacts:** metric files are uploaded as artifact entries under `metrics/class_registry.json` and `metrics/val_loss_by_class.jsonl`.
+- **W&B run IDs:** run IDs are now left to W&B auto-generation (no deterministic `id` passed in `wandb.init`).
 - **Validation generation logging:** validation/test sample generation now prints class-by-class progress lines (no tqdm hash/progress bar output).
 - **Point-cloud class params:** `orientation_per_mode` was removed from active configs/code path (old configs are ignored safely if the key is still present).
 - **Logger naming:** `utils/colorfull_logger.py` was renamed to `utils/colorful_logger.py`.
