@@ -14,21 +14,28 @@ cfg:
 
 
   class_sweeps:
-    - name: sweep_affine_sep
+    - name: sweep_affine_anis
       base:
         family: affine_subspace
-        d: 4  # intrinsic dimension (must be <= D)
+        d: 2  # intrinsic dimension (must be <= D)
         D: ${ambient_dim}
-        K: 8
+        K: 1
+        thickness: 0.02
+        separation: 0.0
         tail:
           kind: gauss
         anisotropy:
-          enabled: false
+          enabled: true
+          min_scale: 1.0
+          max_scale: 1.0
+          permute_per_mode: false
         curvature:
           enabled: false
       sweep:
-        separation: [2.0, 8.0, 20.0]
-        thickness: [0.02, 0.1, 0.5]
+        # Keep a single class by default; use Hydra multirun override to sweep values.
+        anisotropy:
+          max_scale: ${anisotropy_max_scale}
+
 
   # classes:
   #   0:

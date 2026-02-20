@@ -13,7 +13,7 @@ if REPO_ROOT not in sys.path:
 import hydra
 import torch
 from lightning import Trainer, seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 import SiT.wandb_utils as wandb_utils
@@ -119,6 +119,29 @@ def main(cfg: DictConfig):
 
     module = SiTLightningModule(cfg, experiment_name, experiment_dir)
 
+    callbacks = [
+        ModelCheckpoint(
+            dirpath=checkpoint_dir,
+            filename="{step:07d}",
+            every_n_train_steps=cfg.trainer.ckpt_every,
+            save_top_k=-1,
+            save_last=False,
+        )
+    ]
+
+    early_stopping_cfg = getattr(cfg.trainer, "early_stopping", None)
+    if early_stopping_cfg is not None and bool(early_stopping_cfg.get("enabled", False)):
+        callbacks.append(
+            EarlyStopping(
+                monitor=str(early_stopping_cfg.get("monitor", "val/feature_mmd_mean")),
+                mode=str(early_stopping_cfg.get("mode", "min")),
+                patience=int(early_stopping_cfg.get("patience", 3)),
+                min_delta=float(early_stopping_cfg.get("min_delta", 0.0)),
+                strict=bool(early_stopping_cfg.get("strict", False)),
+                verbose=bool(early_stopping_cfg.get("verbose", True)),
+            )
+        )
+
     trainer = Trainer(
         max_epochs=cfg.trainer.epochs,
         accelerator=cfg.trainer.accelerator,
@@ -130,16 +153,9 @@ def main(cfg: DictConfig):
         enable_checkpointing=True,
         default_root_dir=experiment_dir,
         val_check_interval=getattr(cfg.trainer, "val_check_interval", None),
+        check_val_every_n_epoch=getattr(cfg.trainer, "check_val_every_n_epoch", 1),
         num_sanity_val_steps=getattr(cfg.trainer, "num_sanity_val_steps", 0),
-        callbacks=[
-            ModelCheckpoint(
-                dirpath=checkpoint_dir,
-                filename="{step:07d}",
-                every_n_train_steps=cfg.trainer.ckpt_every,
-                save_top_k=-1,
-                save_last=False,
-            )
-        ],
+        callbacks=callbacks,
     )
 
     trainer.fit(module, datamodule=datamodule, ckpt_path=cfg.ckpt)

@@ -412,13 +412,26 @@ def collate_pointclouds(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Te
 
 
 def _set_nested(d: Dict[str, Any], key: str, value: Any) -> None:
+    def _merge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(dst)
+        for k, v in src.items():
+            if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+                out[k] = _merge(out[k], v)
+            else:
+                out[k] = v
+        return out
+
     parts = key.split(".")
     cur = d
     for part in parts[:-1]:
         if part not in cur or not isinstance(cur[part], dict):
             cur[part] = {}
         cur = cur[part]
-    cur[parts[-1]] = value
+    last = parts[-1]
+    if isinstance(value, dict) and isinstance(cur.get(last), dict):
+        cur[last] = _merge(cur[last], value)
+    else:
+        cur[last] = value
 
 
 def _dict_to_class_params(d: dict) -> ClassParams:

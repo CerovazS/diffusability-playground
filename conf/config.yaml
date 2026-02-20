@@ -10,6 +10,7 @@ defaults:
 # Ambient/embedding dimension for point clouds (D in class params)
 # This should be consistent across data config and model config
 ambient_dim: 8
+anisotropy_max_scale: 1.0
 
 ckpt: null
 

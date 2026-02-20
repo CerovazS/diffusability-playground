@@ -11,18 +11,21 @@
 - **Plotting:** `utils/plot_distribution.py` uses `conf/plot.yaml` and `conf/data/synth_pc.yaml`.
 - **Dataset docs:** detailed synthetic dataset documentation is available at `docs/synthetic_pointcloud_dataset.md` (attributes, sweep strategies, commands, and image gallery).
 - **Plot config ambient dim:** `conf/plot.yaml` defines `ambient_dim` so `${ambient_dim}` interpolations in `conf/data/synth_pc.yaml` resolve correctly during plotting.
+- **Anisotropy control:** `conf/config.yaml` defines `anisotropy_max_scale`, used by `conf/data/synth_pc.yaml` for single-class anisotropy configuration and easy multirun sweeps.
 - **Plot output dirs:** `utils/plot_distribution.py` now creates parent directories for `plot.out_name` automatically (e.g. `media_outputs/`).
 - **Doc plot configs:** use `conf/plot_dataset_docs.yaml` and `conf/plot_dataset_docs_anis.yaml` to generate reproducible sweep figures for documentation.
 - **DataModules:** `datamodules/synthetic_pointclouds.py` provides a Lightning DataModule around the synthetic point cloud dataset.
 - **SiT model flags:** `use_pos_embed` and `use_patch_embed` allow disabling positional embeddings and patchifying (e.g. for permutation-invariant sequences).
 - **Synthetic sweeps:** `conf/data/synth_pc.yaml` supports `class_sweeps` to expand a base class into multiple classes via a parameter grid.
-- **Current default synthetic sweep:** `conf/data/synth_pc.yaml` is set to an anisotropy-focused ablation (`sweep_affine_anis`) with `K=1`, `separation=0.0`, and `anisotropy.max_scale` sweep.
+- **Current default synthetic setup:** `conf/data/synth_pc.yaml` is set to an anisotropy-focused ablation (`sweep_affine_anis`) with `K=1`, `separation=0.0`, and a single `anisotropy.max_scale` value by default (use Hydra multirun override to sweep).
+- **Anisotropy sweep override:** use `anisotropy_max_scale=...` in Hydra CLI multirun to launch one run per anisotropy value.
 - **Point-cloud training:** use `conf/data/synth_pc_datamodule.yaml` (wraps `conf/data/synth_pc.yaml`) and set `conf/model/mini_sit.yaml` for non-patchified, no-PE models.
 - **Class count auto-resolve:** `model.num_classes` is auto-resolved at runtime from the instantiated datamodule/dataset before model construction.
-- **Validation:** periodic validation with metrics computation; configure `trainer.check_val_every_n_epoch` (epochs, default `3`) or `trainer.val_check_interval` (steps).
+- **Validation:** periodic validation with metrics computation; configure `trainer.check_val_every_n_epoch` (epochs, default `1`) or `trainer.val_check_interval` (steps).
 - **Validation reproducibility:** set `trainer.val_metrics_seed` to use fixed-noise validation sampling for stable metric curves (`null` keeps stochastic sampling).
 - **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
-- **Point-cloud metrics:** SWD + Energy Distance (U-statistic on cloud distances) + Feature-MMD (RBF on invariant cloud features), logged to wandb per class.
+- **Point-cloud metrics:** SWD + Energy Distance + Feature-MMD are available; current point-cloud training defaults focus on Feature-MMD (`swd.enabled=false`, `energy_distance.enabled=false`, `feature_mmd.enabled=true`).
+- **Early stopping:** `trainer.early_stopping` monitors `val/feature_mmd_mean` (mean across class-wise Feature-MMD metrics) and can stop if no improvement for a configured patience.
 - **Metric hyperparameters:** controlled in `conf/data/synth_pc_datamodule.yaml` under `metrics` (enable flags, SWD projections, Energy cloud-distance settings, Feature-MMD feature toggles/kernel params).
 - **Feature-MMD tracking:** keep `metrics.feature_mmd.gamma` fixed across validation epochs for comparable curves (avoid `gamma: null` when monitoring convergence over time).
 - **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.

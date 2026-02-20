@@ -27,12 +27,12 @@ test_samples_per_class: 2000
 
 metrics:
   swd:
-    enabled: true
+    enabled: false
     num_projections: 512
     seed: 0
 
   energy_distance:
-    enabled: true
+    enabled: false
     distance: chamfer_l2
     max_clouds: 256
     downsample_points: 128

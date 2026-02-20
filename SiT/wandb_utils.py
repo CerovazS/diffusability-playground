@@ -6,7 +6,6 @@ from PIL import Image
 import os
 import argparse
 from collections.abc import Mapping
-import hashlib
 import math
 from typing import Iterable
 
@@ -25,11 +24,6 @@ def namespace_to_dict(namespace):
     return namespace
 
 
-def generate_run_id(exp_name):
-    # https://stackoverflow.com/questions/16008670/how-to-hash-a-string-into-8-digits
-    return str(int(hashlib.sha256(exp_name.encode('utf-8')).hexdigest(), 16) % 10 ** 8)
-
-
 def initialize(args, entity, exp_name, project_name):
     config_dict = namespace_to_dict(args)
     # Login: try with env var first, fallback to interactive
@@ -42,8 +36,6 @@ def initialize(args, entity, exp_name, project_name):
         project=project_name,
         name=exp_name,
         config=config_dict,
-        id=generate_run_id(exp_name),
-        resume="allow",
     )
 
 

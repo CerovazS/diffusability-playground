@@ -1,5 +1,5 @@
 results_dir: results
-epochs: 100
+epochs: 120
 global_batch_size: 256
 global_seed: 0
 num_workers: 4
@@ -12,11 +12,20 @@ wandb_project: diffusion-playground
 
 # Validation
 val_check_interval: null  # validate every N training steps (null = every epoch)
+check_val_every_n_epoch: 1  # run validation every epoch (needed for epoch-level early stopping)
 num_sanity_val_steps: 0   # skip sanity check (validation is slow due to sampling)
 val_metrics_seed: 0        # fixed seed for validation sampling used by metrics (null = stochastic)
+early_stopping:
+  enabled: true
+  monitor: val/feature_mmd_mean
+  mode: min
+  patience: 3
+  min_delta: 0.0
+  strict: false
+  verbose: true
 
 # Optimizer
-lr: 1.0e-4
+lr: 1.0e-3
 weight_decay: 0.0
 
 # Lightning Trainer

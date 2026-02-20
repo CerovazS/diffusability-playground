@@ -136,6 +136,21 @@ def run_metrics(module: Any, split: str) -> None:
         info("Computing metrics (SWD, Energy-U, Feature-MMD)...")
     metrics = datamodule.compute_metrics(real_samples, generated_samples, split)
 
+    # Aggregate feature-MMD across classes so Trainer callbacks can monitor a single scalar.
+    feature_mmd_keys = [k for k in metrics.keys() if k.startswith(f"{split}/feature_mmd/class_")]
+    if feature_mmd_keys:
+        feature_mmd_mean = float(np.mean([float(metrics[k]) for k in feature_mmd_keys]))
+        metrics[f"{split}/feature_mmd_mean"] = feature_mmd_mean
+        module.log(
+            f"{split}/feature_mmd_mean",
+            feature_mmd_mean,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=(split == "val"),
+            logger=True,
+            sync_dist=False,
+        )
+
     if module.cfg.trainer.use_wandb:
         wandb_utils.log(metrics, step=module.global_step)
 
