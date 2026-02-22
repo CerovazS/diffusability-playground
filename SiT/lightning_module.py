@@ -298,7 +298,7 @@ class SiTLightningModule(LightningModule):
                 self._val_loss_counts.scatter_add_(0, idx_tensor, count_tensor)
 
         loss = per_sample_loss.mean()
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def on_validation_epoch_end(self):

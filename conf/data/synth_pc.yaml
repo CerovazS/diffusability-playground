@@ -17,7 +17,7 @@ cfg:
     - name: sweep_affine_anis
       base:
         family: affine_subspace
-        d: 2  # intrinsic dimension (must be <= D)
+        d: 6  # intrinsic dimension (must be <= D)
         D: ${ambient_dim}
         K: 1
         thickness: 0.02

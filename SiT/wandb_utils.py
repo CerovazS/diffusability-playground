@@ -2,16 +2,19 @@ import wandb
 import torch
 from torchvision.utils import make_grid
 import torch.distributed as dist
-from PIL import Image
 import os
 import argparse
 from collections.abc import Mapping
 import math
 from typing import Iterable
 
+_WANDB_FINISHED = True
+
 
 def is_main_process():
-    return dist.get_rank() == 0
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank() == 0
+    return True
 
 def namespace_to_dict(namespace):
     if isinstance(namespace, Mapping):
@@ -25,18 +28,38 @@ def namespace_to_dict(namespace):
 
 
 def initialize(args, entity, exp_name, project_name):
+    global _WANDB_FINISHED
     config_dict = namespace_to_dict(args)
     # Login: try with env var first, fallback to interactive
     wandb_key = os.environ.get("WANDB_KEY")
     if wandb_key:
         wandb.login(key=wandb_key)
     # else wandb will prompt for login interactively
-    wandb.init(
+    _WANDB_FINISHED = False
+    return wandb.init(
         entity=entity,
         project=project_name,
         name=exp_name,
         config=config_dict,
+        reinit=True,
     )
+
+
+def finish(exit_code: int = 0):
+    global _WANDB_FINISHED
+    if _WANDB_FINISHED:
+        return
+    _WANDB_FINISHED = True
+
+    try:
+        if wandb.run is not None:
+            wandb.finish(exit_code=exit_code)
+    finally:
+        # Ensure background services are torn down on interrupts (Ctrl+C/SIGTERM).
+        try:
+            wandb.teardown()
+        except Exception:
+            pass
 
 
 def log(stats, step=None):

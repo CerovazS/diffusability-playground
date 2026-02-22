@@ -10,6 +10,7 @@
 - **Training/config:** Hydra-driven experiments; main training config is `conf/config.yaml` with groups under `conf/data/`, `conf/model/`, `conf/trainer/`.
 - **Plotting:** `utils/plot_distribution.py` uses `conf/plot.yaml` and `conf/data/synth_pc.yaml`.
 - **Dataset docs:** detailed synthetic dataset documentation is available at `docs/synthetic_pointcloud_dataset.md` (attributes, sweep strategies, commands, and image gallery).
+- **Math foundations:** the mathematical formulation of synthetic generation and metrics (including Feature-MMD) is documented in `docs/synthetic_pointcloud_math_foundations.md`.
 - **Plot config ambient dim:** `conf/plot.yaml` defines `ambient_dim` so `${ambient_dim}` interpolations in `conf/data/synth_pc.yaml` resolve correctly during plotting.
 - **Anisotropy control:** `conf/config.yaml` defines `anisotropy_max_scale`, used by `conf/data/synth_pc.yaml` for single-class anisotropy configuration and easy multirun sweeps.
 - **Plot output dirs:** `utils/plot_distribution.py` now creates parent directories for `plot.out_name` automatically (e.g. `media_outputs/`).
@@ -23,15 +24,23 @@
 - **Class count auto-resolve:** `model.num_classes` is auto-resolved at runtime from the instantiated datamodule/dataset before model construction.
 - **Validation:** periodic validation with metrics computation; configure `trainer.check_val_every_n_epoch` (epochs, default `1`) or `trainer.val_check_interval` (steps).
 - **Validation reproducibility:** set `trainer.val_metrics_seed` to use fixed-noise validation sampling for stable metric curves (`null` keeps stochastic sampling).
+- **Best checkpoint selection:** configure `trainer.best_checkpoint.monitor`/`mode` in `conf/trainer/sit_trainer.yaml` to pick the best model on your chosen validation metric.
+- **Automatic post-fit test:** `trainer.test_after_fit` can run `trainer.test(...)` automatically at the end of training, using the selected best checkpoint.
+- **Lightning test API compatibility:** post-fit test now calls `trainer.test(model=..., datamodule=..., ckpt_path=...)` (not `module=...`) to match current Lightning `Trainer.test` signature.
 - **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
 - **Point-cloud metrics:** SWD + Energy Distance + Feature-MMD are available; current point-cloud training defaults focus on Feature-MMD (`swd.enabled=false`, `energy_distance.enabled=false`, `feature_mmd.enabled=true`).
-- **Early stopping:** `trainer.early_stopping` monitors `val/feature_mmd_mean` (mean across class-wise Feature-MMD metrics) and can stop if no improvement for a configured patience.
+- **Early stopping:** `trainer.early_stopping` monitors `val_loss` (validation L2 loss) and can stop if no improvement for a configured patience.
+- **Validation MMD:** Feature-MMD is still computed and logged during validation (`val/feature_mmd/class_*` and `val/feature_mmd_mean`) for analysis.
+- **Validation/Test metric parity:** test uses the same metric definitions and hyperparameters as validation (`compute_metrics(...)`), logged with `test/...` prefixes.
 - **Metric hyperparameters:** controlled in `conf/data/synth_pc_datamodule.yaml` under `metrics` (enable flags, SWD projections, Energy cloud-distance settings, Feature-MMD feature toggles/kernel params).
 - **Feature-MMD tracking:** keep `metrics.feature_mmd.gamma` fixed across validation epochs for comparable curves (avoid `gamma: null` when monitoring convergence over time).
 - **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.
 - **Per-class validation loss tracking:** each run writes `results/<run>/metrics/class_registry.json` (class id -> sweep/params mapping) and appends `results/<run>/metrics/val_loss_by_class.jsonl` (time series by step/epoch).
 - **W&B metrics artifacts:** metric files are uploaded as artifact entries under `metrics/class_registry.json` and `metrics/val_loss_by_class.jsonl`.
 - **W&B run IDs:** run IDs are now left to W&B auto-generation (no deterministic `id` passed in `wandb.init`).
+- **W&B multirun lifecycle:** each Hydra job opens a fresh run (`reinit=True`) and closes it explicitly via `wandb.finish(...)` at job end.
+- **W&B rank handling:** logging helpers now detect whether `torch.distributed` is initialized, so they work correctly in both DDP and single-process runs.
+- **W&B interrupt handling:** `SIGINT/SIGTERM` (including `Ctrl+C`) now trigger immediate `wandb.finish(...)` + teardown to avoid stuck "live" runs.
 - **Validation generation logging:** validation/test sample generation now prints class-by-class progress lines (no tqdm hash/progress bar output).
 - **Point-cloud class params:** `orientation_per_mode` was removed from active configs/code path (old configs are ignored safely if the key is still present).
 - **Logger naming:** `utils/colorfull_logger.py` was renamed to `utils/colorful_logger.py`.

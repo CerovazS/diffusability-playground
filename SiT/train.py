@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from glob import glob
 
@@ -112,13 +113,31 @@ def main(cfg: DictConfig):
     if is_main_process():
         info(f"Resolved num_classes={resolved_num_classes}")
 
-    if cfg.trainer.use_wandb and is_main_process():
+    wandb_enabled = bool(cfg.trainer.use_wandb and is_main_process())
+    signal_handlers_backup = {}
+    signal_exit_code = 1
+
+    def _on_termination(signum, _frame):
+        nonlocal signal_exit_code
+        signal_exit_code = 128 + int(signum)
+        if wandb_enabled:
+            info(f"Received signal {signum}; closing W&B run...")
+            wandb_utils.finish(exit_code=signal_exit_code)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(signal_exit_code)
+
+    if wandb_enabled:
         entity = cfg.trainer.wandb_entity
         project = cfg.trainer.wandb_project
         wandb_utils.initialize(OmegaConf.to_container(cfg, resolve=True), entity, experiment_name, project)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal_handlers_backup[sig] = signal.getsignal(sig)
+            signal.signal(sig, _on_termination)
 
     module = SiTLightningModule(cfg, experiment_name, experiment_dir)
 
+    best_ckpt_callback = None
     callbacks = [
         ModelCheckpoint(
             dirpath=checkpoint_dir,
@@ -129,11 +148,24 @@ def main(cfg: DictConfig):
         )
     ]
 
+    best_ckpt_cfg = getattr(cfg.trainer, "best_checkpoint", None)
+    if best_ckpt_cfg is not None and bool(best_ckpt_cfg.get("enabled", True)):
+        best_ckpt_callback = ModelCheckpoint(
+            dirpath=checkpoint_dir,
+            filename=str(best_ckpt_cfg.get("filename", "best-{epoch:03d}-{step:07d}")),
+            monitor=str(best_ckpt_cfg.get("monitor", "val_loss")),
+            mode=str(best_ckpt_cfg.get("mode", "min")),
+            save_top_k=int(best_ckpt_cfg.get("save_top_k", 1)),
+            save_last=bool(best_ckpt_cfg.get("save_last", False)),
+            auto_insert_metric_name=bool(best_ckpt_cfg.get("auto_insert_metric_name", False)),
+        )
+        callbacks.append(best_ckpt_callback)
+
     early_stopping_cfg = getattr(cfg.trainer, "early_stopping", None)
     if early_stopping_cfg is not None and bool(early_stopping_cfg.get("enabled", False)):
         callbacks.append(
             EarlyStopping(
-                monitor=str(early_stopping_cfg.get("monitor", "val/feature_mmd_mean")),
+                monitor=str(early_stopping_cfg.get("monitor", "val_loss")),
                 mode=str(early_stopping_cfg.get("mode", "min")),
                 patience=int(early_stopping_cfg.get("patience", 3)),
                 min_delta=float(early_stopping_cfg.get("min_delta", 0.0)),
@@ -158,7 +190,63 @@ def main(cfg: DictConfig):
         callbacks=callbacks,
     )
 
-    trainer.fit(module, datamodule=datamodule, ckpt_path=cfg.ckpt)
+    test_after_fit_cfg = getattr(cfg.trainer, "test_after_fit", None)
+    run_test_after_fit = bool(test_after_fit_cfg is not None and test_after_fit_cfg.get("enabled", False))
+    use_best_ckpt_for_test = bool(test_after_fit_cfg is not None and test_after_fit_cfg.get("use_best_checkpoint", True))
+    strict_test_ckpt = bool(test_after_fit_cfg is not None and test_after_fit_cfg.get("strict", True))
+
+    fit_succeeded = False
+    test_succeeded = False
+    run_succeeded = False
+    try:
+        trainer.fit(module, datamodule=datamodule, ckpt_path=cfg.ckpt)
+        fit_succeeded = True
+
+        if run_test_after_fit:
+            test_ckpt_path = None
+            if use_best_ckpt_for_test:
+                if best_ckpt_callback is None:
+                    raise ValueError(
+                        "test_after_fit.use_best_checkpoint=true requires trainer.best_checkpoint.enabled=true."
+                    )
+                best_model_path = str(best_ckpt_callback.best_model_path or "").strip()
+                if not best_model_path:
+                    monitor_name = str(getattr(best_ckpt_callback, "monitor", "unknown"))
+                    message = (
+                        "Best checkpoint path is empty after training. "
+                        f"Monitor='{monitor_name}'. Ensure the monitored metric is logged during validation."
+                    )
+                    if strict_test_ckpt:
+                        raise RuntimeError(message)
+                    if is_main_process():
+                        info(f"{message} Falling back to current in-memory weights for test.")
+                else:
+                    test_ckpt_path = best_model_path
+                    if is_main_process():
+                        info(
+                            "Running test with best checkpoint "
+                            f"(monitor={best_ckpt_callback.monitor}, path={best_model_path})"
+                        )
+            else:
+                if is_main_process():
+                    info("Running test with current in-memory weights.")
+
+            trainer.test(model=module, datamodule=datamodule, ckpt_path=test_ckpt_path)
+            test_succeeded = True
+        else:
+            test_succeeded = True
+
+        run_succeeded = fit_succeeded and test_succeeded
+    except KeyboardInterrupt:
+        if is_main_process():
+            info("Training interrupted by user.")
+        raise
+    finally:
+        if wandb_enabled:
+            if signal_handlers_backup:
+                for sig, handler in signal_handlers_backup.items():
+                    signal.signal(sig, handler)
+            wandb_utils.finish(exit_code=0 if run_succeeded else signal_exit_code)
 
     if is_main_process():
         info("Done!")
