@@ -1,37 +1,16 @@
 """
-Synthetic point-cloud dataset and Lightning DataModule.
+Synthetic vector-valued dataset and Lightning DataModule.
 
 Overview
 --------
-This module generates labeled point-cloud samples with controllable geometry.
+This module generates labeled ambient-space samples with controllable geometry.
 Each dataset item is a tuple (x, y) where:
-  - x is a point cloud of shape [N, D] (N points in D-dimensional space)
+  - x is a single point of shape [D]
   - y is an integer class label in [0, num_classes-1]
 
-Key properties
---------------
-- Permutation invariant: each sample is an unordered set of points; no positional
-  encoding or ordering is assumed.
-- Deterministic by index: for a fixed base_seed, each sample index maps to a
-  deterministic RNG stream, making the dataset stable across workers and runs.
-- Multi-family geometry: each class chooses a geometric family with its own
-  parameters, such as affine subspaces, sine-warped subspaces, or mixtures of
-  Gaussians.
-
-Config structure
-----------------
-The dataset is parameterized by dataclasses:
-  - DatasetConfig: global controls (num_samples, points_per_cloud, num_classes,
-    base_seed, device, classes)
-  - ClassParams: per-class geometry parameters, including family, intrinsic/ambient
-    dimensions (d, D), mixture components K, separation, thickness, and optional
-    tail/anisotropy/curvature settings.
-
-Lightning integration
----------------------
-SyntheticPointCloudDataModule wraps the dataset and provides a train dataloader.
-It expects a DatasetConfig instance created by Hydra (via hydra.utils.instantiate),
-and exposes typical DataLoader knobs (batch_size, num_workers, pin_memory, drop_last).
+Each class defines a distribution in R^D. Different samples from the same class
+share the same class parameters but are independently re-sampled from that
+distribution using an index-deterministic RNG stream.
 """
 
 from __future__ import annotations
@@ -119,9 +98,11 @@ class DatasetConfig:
     Determinism: (base_seed, idx) -> unique RNG state; stable across workers.
     """
     num_samples: int = 50_000
-    points_per_cloud: int = 512
+    # Deprecated compatibility field from the old point-cloud setup. Samples are now vectors [D].
+    points_per_cloud: int = 1
     num_classes: int = 4
     base_seed: int = 1234
+    geometry_seed: int = 0
     device: str = "cpu"  # usually keep cpu for dataset generation; move batch to GPU in training
     # If set, enforce an equal number of samples per class.
     samples_per_class: Optional[int] = None
@@ -197,18 +178,20 @@ def _random_orthonormal(D: int, d: int, g: torch.Generator, device: str) -> torc
     return Q[:, :d]
 
 
-def _choose_mode(K: int, weights: Optional[List[float]], g: torch.Generator, device: str) -> int:
+def _sample_mode_indices(
+    K: int,
+    weights: Optional[List[float]],
+    n: int,
+    g: torch.Generator,
+    device: str,
+) -> torch.Tensor:
     if K <= 1:
-        return 0
+        return torch.zeros(n, dtype=torch.long, device=device)
     if weights is None:
-        # uniform
-        u = _rand((1,), g, device).item()
-        return int(min(K - 1, math.floor(u * K)))
+        return torch.randint(0, K, (n,), generator=g, device=device)
     w = torch.tensor(weights, device=device, dtype=torch.float32)
     w = w / w.sum()
-    u = _rand((1,), g, device).item()
-    cdf = torch.cumsum(w, dim=0)
-    return int(torch.searchsorted(cdf, torch.tensor(u, device=device)).item())
+    return torch.multinomial(w, num_samples=n, replacement=True, generator=g)
 
 
 # -------------------------
@@ -216,7 +199,18 @@ def _choose_mode(K: int, weights: Optional[List[float]], g: torch.Generator, dev
 # -------------------------
 
 class PointCloudFamily:
-    def sample(self, *, N: int, params: ClassParams, g: torch.Generator, device: str) -> torch.Tensor:
+    def build_geometry(self, *, params: ClassParams, g: torch.Generator, device: str) -> Dict[str, torch.Tensor]:
+        raise NotImplementedError
+
+    def sample(
+        self,
+        *,
+        N: int,
+        params: ClassParams,
+        geometry: Dict[str, torch.Tensor],
+        g: torch.Generator,
+        device: str,
+    ) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -225,40 +219,34 @@ class AffineSubspaceMixture(PointCloudFamily):
     x = mu_k + (z * s) @ U^T + thickness * eps
     where U is D x d orthonormal, z in R^d sampled from tail dist.
     """
-    def sample(self, *, N: int, params: ClassParams, g: torch.Generator, device: str) -> torch.Tensor:
+    def build_geometry(self, *, params: ClassParams, g: torch.Generator, device: str) -> Dict[str, torch.Tensor]:
         d, D, K = params.d, params.D, params.K
         if d > D:
             raise ValueError(f"Need d <= D, got d={d}, D={D}")
-
-        # Choose mode
-        k = _choose_mode(K, params.mode_weights, g, device)
-
-        # Orientation
         U = _random_orthonormal(D, d, g, device)
-
-        # Intrinsic sample
-        z = _sample_tail(params.tail.kind, N, d, g, device, params.tail)
-
-        # Anisotropy in intrinsic coords
+        scales = torch.ones(d, device=device)
         if params.anisotropy.enabled:
-            s = _logspace_scales(d, params.anisotropy.min_scale, params.anisotropy.max_scale, device)
-            if params.anisotropy.permute_per_mode and d > 1:
-                perm = torch.randperm(d, generator=g, device=device)
-                s = s[perm]
-            z = z * s
-
-        # Mean shift controlling mode separation
-        # Put separation along a random direction in ambient space for each mode.
-        # This keeps "separation" independent of U choice.
+            scales = _logspace_scales(d, params.anisotropy.min_scale, params.anisotropy.max_scale, device)
         dir_vec = _randn((D,), g, device)
         dir_vec = dir_vec / (dir_vec.norm() + 1e-8)
+        offsets = torch.arange(K, device=device, dtype=torch.float32) - (float(K) - 1.0) / 2.0
+        mode_centers = offsets[:, None] * float(params.separation) * dir_vec[None, :]
+        return {"basis": U, "scales": scales, "mode_centers": mode_centers}
 
-        # Center the modes around 0 for stability:
-        # offsets = (k - (K-1)/2) * separation
-        offset = (float(k) - (float(K) - 1.0) / 2.0) * float(params.separation)
-        mu = offset * dir_vec  # [D]
-
-        x = z @ U.T + mu  # [N, D]
+    def sample(
+        self,
+        *,
+        N: int,
+        params: ClassParams,
+        geometry: Dict[str, torch.Tensor],
+        g: torch.Generator,
+        device: str,
+    ) -> torch.Tensor:
+        D = params.D
+        z = _sample_tail(params.tail.kind, N, params.d, g, device, params.tail)
+        z = z * geometry["scales"]
+        mode_idx = _sample_mode_indices(params.K, params.mode_weights, N, g, device)
+        x = z @ geometry["basis"].T + geometry["mode_centers"][mode_idx]
         x = x + float(params.thickness) * _randn((N, D), g, device)
         return x
 
@@ -268,7 +256,7 @@ class SineWarpSubspaceMixture(PointCloudFamily):
     Same as affine subspace, but warps intrinsic coordinates:
         z' = z + alpha * sin(freq * z)
     """
-    def sample(self, *, N: int, params: ClassParams, g: torch.Generator, device: str) -> torch.Tensor:
+    def build_geometry(self, *, params: ClassParams, g: torch.Generator, device: str) -> Dict[str, torch.Tensor]:
         if not params.curvature.enabled:
             # still allow using this family with alpha=0
             pass
@@ -276,30 +264,33 @@ class SineWarpSubspaceMixture(PointCloudFamily):
         d, D, K = params.d, params.D, params.K
         if d > D:
             raise ValueError(f"Need d <= D, got d={d}, D={D}")
-
-        k = _choose_mode(K, params.mode_weights, g, device)
-
         U = _random_orthonormal(D, d, g, device)
-
-        z = _sample_tail(params.tail.kind, N, d, g, device, params.tail)
-
+        scales = torch.ones(d, device=device)
         if params.anisotropy.enabled:
-            s = _logspace_scales(d, params.anisotropy.min_scale, params.anisotropy.max_scale, device)
-            if params.anisotropy.permute_per_mode and d > 1:
-                perm = torch.randperm(d, generator=g, device=device)
-                s = s[perm]
-            z = z * s
+            scales = _logspace_scales(d, params.anisotropy.min_scale, params.anisotropy.max_scale, device)
+        dir_vec = _randn((D,), g, device)
+        dir_vec = dir_vec / (dir_vec.norm() + 1e-8)
+        offsets = torch.arange(K, device=device, dtype=torch.float32) - (float(K) - 1.0) / 2.0
+        mode_centers = offsets[:, None] * float(params.separation) * dir_vec[None, :]
+        return {"basis": U, "scales": scales, "mode_centers": mode_centers}
 
+    def sample(
+        self,
+        *,
+        N: int,
+        params: ClassParams,
+        geometry: Dict[str, torch.Tensor],
+        g: torch.Generator,
+        device: str,
+    ) -> torch.Tensor:
+        D = params.D
+        z = _sample_tail(params.tail.kind, N, params.d, g, device, params.tail)
+        z = z * geometry["scales"]
         alpha = float(params.curvature.alpha) if params.curvature.enabled else 0.0
         freq = float(params.curvature.freq)
         z = z + alpha * torch.sin(freq * z)
-
-        dir_vec = _randn((D,), g, device)
-        dir_vec = dir_vec / (dir_vec.norm() + 1e-8)
-        offset = (float(k) - (float(K) - 1.0) / 2.0) * float(params.separation)
-        mu = offset * dir_vec
-
-        x = z @ U.T + mu
+        mode_idx = _sample_mode_indices(params.K, params.mode_weights, N, g, device)
+        x = z @ geometry["basis"].T + geometry["mode_centers"][mode_idx]
         x = x + float(params.thickness) * _randn((N, D), g, device)
         return x
 
@@ -309,19 +300,27 @@ class MoGFamily(PointCloudFamily):
     A plain mixture of Gaussians in R^D (controls K, separation, cov).
     Useful as phase-0 sanity check.
     """
-    def sample(self, *, N: int, params: ClassParams, g: torch.Generator, device: str) -> torch.Tensor:
+    def build_geometry(self, *, params: ClassParams, g: torch.Generator, device: str) -> Dict[str, torch.Tensor]:
         D, K = params.D, params.K
-        k = _choose_mode(K, params.mode_weights, g, device)
-
-        # Means arranged along a random direction, centered
         dir_vec = _randn((D,), g, device)
         dir_vec = dir_vec / (dir_vec.norm() + 1e-8)
-        offset = (float(k) - (float(K) - 1.0) / 2.0) * float(params.separation)
-        mu = offset * dir_vec  # [D]
+        offsets = torch.arange(K, device=device, dtype=torch.float32) - (float(K) - 1.0) / 2.0
+        mode_centers = offsets[:, None] * float(params.separation) * dir_vec[None, :]
+        return {"mode_centers": mode_centers}
 
-        # Diagonal covariance controlled by mog_diag_cov (then add thickness as extra noise)
+    def sample(
+        self,
+        *,
+        N: int,
+        params: ClassParams,
+        geometry: Dict[str, torch.Tensor],
+        g: torch.Generator,
+        device: str,
+    ) -> torch.Tensor:
+        D = params.D
         base_sigma = float(params.mog_diag_cov)
-        x = mu + base_sigma * _randn((N, D), g, device)
+        mode_idx = _sample_mode_indices(params.K, params.mode_weights, N, g, device)
+        x = geometry["mode_centers"][mode_idx] + base_sigma * _randn((N, D), g, device)
         x = x + float(params.thickness) * _randn((N, D), g, device)
         return x
 
@@ -346,7 +345,6 @@ class ConditionalPointCloudDataset(Dataset):
     """
     def __init__(self, cfg: DatasetConfig):
         self.cfg = cfg
-        self.N = int(cfg.points_per_cloud)
         self.num_samples = int(cfg.num_samples)
         self.device = cfg.device
         self.samples_per_class = cfg.samples_per_class
@@ -366,6 +364,22 @@ class ConditionalPointCloudDataset(Dataset):
 
         self.class_ids = sorted(cfg.classes.keys())
         self.class_params: Dict[int, ClassParams] = cfg.classes
+        if not self.class_ids:
+            raise ValueError("Dataset must define at least one class.")
+        self.sample_dim = int(self.class_params[self.class_ids[0]].D)
+        if any(int(self.class_params[class_id].D) != self.sample_dim for class_id in self.class_ids):
+            raise ValueError("All classes must share the same ambient dimension D for batched training.")
+        self.class_geometries = self._build_class_geometries()
+
+    def _build_class_geometries(self) -> Dict[int, Dict[str, torch.Tensor]]:
+        geometries: Dict[int, Dict[str, torch.Tensor]] = {}
+        for class_id in self.class_ids:
+            params = self.class_params[class_id]
+            family = _FAMILY_REGISTRY[params.family]
+            geometry_seed = int(self.cfg.geometry_seed) + int(class_id)
+            g = _make_generator(self.device, geometry_seed)
+            geometries[class_id] = family.build_geometry(params=params, g=g, device=self.device)
+        return geometries
 
     def __len__(self) -> int:
         if self.samples_per_class is not None:
@@ -393,9 +407,10 @@ class ConditionalPointCloudDataset(Dataset):
 
         g = _make_generator(self.device, seed)
         params = self.class_params[y]
+        geometry = self.class_geometries[y]
         family = _FAMILY_REGISTRY[params.family]
 
-        x = family.sample(N=self.N, params=params, g=g, device=self.device)  # [N, D]
+        x = family.sample(N=1, params=params, geometry=geometry, g=g, device=self.device).squeeze(0)  # [D]
         # Return label as python int for standard collate
         return x, int(y)
 
@@ -406,7 +421,7 @@ class ConditionalPointCloudDataset(Dataset):
 
 def collate_pointclouds(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Tensor, torch.Tensor]:
     xs, ys = zip(*batch)
-    x = torch.stack(xs, dim=0)  # [B, N, D] (D may differ across classes; keep D consistent in configs)
+    x = torch.stack(xs, dim=0)  # [B, D]
     y = torch.tensor(ys, dtype=torch.long)
     return x, y
 
@@ -505,7 +520,7 @@ def _deep_update(base: Dict[str, Any], updates: Optional[Dict[str, Any]]) -> Dic
     return out
 
 
-def _default_pointcloud_metrics_cfg() -> Dict[str, Any]:
+def _default_sample_metrics_cfg() -> Dict[str, Any]:
     return {
         "swd": {
             "enabled": True,
@@ -514,27 +529,18 @@ def _default_pointcloud_metrics_cfg() -> Dict[str, Any]:
         },
         "energy_distance": {
             "enabled": True,
-            "distance": "chamfer_l2",
-            "max_clouds": 256,
-            "downsample_points": None,
+            "distance": "l2",
+            "max_samples": 256,
             "seed": 0,
         },
         "feature_mmd": {
             "enabled": True,
-            "max_clouds": 512,
+            "max_samples": 512,
             "seed": 0,
             "gamma": None,
             "gamma_scale": 1.0,
             "unbiased": True,
             "standardize_features": True,
-            "include_centroid": True,
-            "include_log_eigvals": True,
-            "include_participation_ratio": True,
-            "include_thickness": True,
-            "include_kurtosis": True,
-            "include_curvature": True,
-            "thickness_tail_fraction": 0.25,
-            "curvature_k_neighbors": 16,
             "eig_eps": 1e-8,
         },
     }
@@ -589,11 +595,11 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         self.train_samples_per_class = train_samples_per_class
         self.val_samples_per_class = val_samples_per_class
         self.test_samples_per_class = test_samples_per_class
-        self.metrics_cfg = _deep_update(_default_pointcloud_metrics_cfg(), metrics)
+        self.metrics_cfg = _deep_update(_default_sample_metrics_cfg(), metrics)
         self.train_dataset: Optional[ConditionalPointCloudDataset] = None
         self.val_dataset: Optional[ConditionalPointCloudDataset] = None
         self.test_dataset: Optional[ConditionalPointCloudDataset] = None
-        self.is_pointcloud = True
+        self.is_pointcloud = False
         self.is_metrics_capable = True
 
     def setup(self, stage: Optional[str] = None):
@@ -689,19 +695,19 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
     # -------------------------
 
     def get_eval_config(self) -> EvalConfig:
-        """Return evaluation configuration for point cloud metrics."""
+        """Return evaluation configuration for vector-valued metrics."""
         dataset = self.val_dataset or self.train_dataset
         if dataset is None:
             raise RuntimeError("Call setup() before requesting eval config.")
         
         samples_per_class = dataset.samples_per_class
         if samples_per_class is None:
-            raise ValueError("samples_per_class must be set for point-cloud metrics.")
+            raise ValueError("samples_per_class must be set for synthetic vector metrics.")
         
         return EvalConfig(
             class_ids=dataset.class_ids,
             samples_per_class=samples_per_class,
-            sample_shape=(dataset.N, self.cfg.classes[dataset.class_ids[0]].D),
+            sample_shape=(dataset.sample_dim,),
             num_classes=len(dataset.class_ids),
             needs_decoding=False,
         )
@@ -713,7 +719,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         batch_size: int = 64,
     ) -> Dict[int, np.ndarray]:
         """
-        Collect real point cloud samples from the dataset, organized by class.
+        Collect real samples from the dataset, organized by class.
         
         Args:
             split: "train", "val", or "test"
@@ -721,7 +727,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             batch_size: batch size for loading
             
         Returns:
-            Dict mapping class_id -> numpy array of shape [N_samples, N_points, D]
+            Dict mapping class_id -> numpy array of shape [N_samples, D]
         """
         dataset = getattr(self, f"{split}_dataset", None)
         if dataset is None:
@@ -736,7 +742,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             drop_last=False,
         )
 
-        clouds: Dict[int, List[np.ndarray]] = {cid: [] for cid in dataset.class_ids}
+        samples: Dict[int, List[np.ndarray]] = {cid: [] for cid in dataset.class_ids}
         counts: Dict[int, int] = {cid: 0 for cid in dataset.class_ids}
 
         for xb, yb in loader:
@@ -744,12 +750,12 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
                 y = int(yb[i].item())
                 if counts[y] >= samples_per_class:
                     continue
-                clouds[y].append(xb[i].cpu().numpy())
+                samples[y].append(xb[i].cpu().numpy())
                 counts[y] += 1
             if all(c >= samples_per_class for c in counts.values()):
                 break
 
-        return {k: np.stack(v, axis=0) for k, v in clouds.items()}
+        return {k: np.stack(v, axis=0) for k, v in samples.items()}
 
     def compute_metrics(
         self,
@@ -758,19 +764,19 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         split: str,
     ) -> Dict[str, float]:
         """
-        Compute point cloud metrics for each class.
+        Compute vector-distribution metrics for each class.
         
         Args:
-            real_samples: Dict mapping class_id -> real point clouds [N, points, D]
-            generated_samples: Dict mapping class_id -> generated point clouds [N, points, D]
+            real_samples: Dict mapping class_id -> real samples [N, D]
+            generated_samples: Dict mapping class_id -> generated samples [N, D]
             split: "val" or "test" for metric naming
             
         Returns:
             Dict of metric_name -> metric_value
         """
         from utils.pointcloud_metrics import (
-            energy_distance_u_statistic_clouds,
-            mmd_rbf_invariant_features,
+            energy_distance_u_statistic_samples,
+            mmd_rbf_samples,
             sliced_wasserstein_distance,
         )
         from utils.colorful_logger import info
@@ -789,13 +795,10 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             gen = generated_samples[class_id]
 
             if bool(swd_cfg.get("enabled", True)):
-                # Flatten for SWD (all points from all clouds)
-                real_points = real.reshape(-1, real.shape[-1])
-                gen_points = gen.reshape(-1, gen.shape[-1])
-                info(f"  → SWD ({real_points.shape[0]} vs {gen_points.shape[0]} points)...")
+                info(f"  → SWD ({real.shape[0]} vs {gen.shape[0]} samples)...")
                 swd = sliced_wasserstein_distance(
-                    real_points,
-                    gen_points,
+                    real,
+                    gen,
                     num_projections=int(swd_cfg.get("num_projections", 256)),
                     seed=int(swd_cfg.get("seed", 0)) + int(class_id),
                 )
@@ -803,37 +806,29 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
                 info(f"  ✓ SWD={swd:.6f}")
 
             if bool(energy_cfg.get("enabled", True)):
-                info(f"  → Energy-U ({real.shape[0]} vs {gen.shape[0]} clouds)...")
-                energy = energy_distance_u_statistic_clouds(
+                info(f"  → Energy-U ({real.shape[0]} vs {gen.shape[0]} samples)...")
+                energy = energy_distance_u_statistic_samples(
                     real,
                     gen,
-                    distance=str(energy_cfg.get("distance", "chamfer_l2")),
-                    max_clouds=energy_cfg.get("max_clouds", 256),
-                    downsample_points=energy_cfg.get("downsample_points", None),
+                    distance=str(energy_cfg.get("distance", "l2")),
+                    max_samples=energy_cfg.get("max_samples", 256),
                     seed=int(energy_cfg.get("seed", 0)) + int(class_id),
                 )
                 metrics[f"{split}/energy_u/class_{class_id}"] = float(energy)
                 info(f"  ✓ Energy-U={energy:.6f}")
 
             if bool(feature_mmd_cfg.get("enabled", True)):
-                info(f"  → Feature-MMD ({real.shape[0]} vs {gen.shape[0]} clouds)...")
-                mmd_feat = mmd_rbf_invariant_features(
+                info(f"  → Feature-MMD ({real.shape[0]} vs {gen.shape[0]} samples)...")
+                mmd_feat = mmd_rbf_samples(
                     real,
                     gen,
-                    max_clouds=feature_mmd_cfg.get("max_clouds", 512),
+                    max_samples=feature_mmd_cfg.get("max_samples", 512),
                     seed=int(feature_mmd_cfg.get("seed", 0)) + int(class_id),
                     gamma=feature_mmd_cfg.get("gamma", None),
+                    gamma_mode=str(feature_mmd_cfg.get("gamma_mode", "median_cross")),
                     gamma_scale=float(feature_mmd_cfg.get("gamma_scale", 1.0)),
                     unbiased=bool(feature_mmd_cfg.get("unbiased", True)),
-                    standardize_features=bool(feature_mmd_cfg.get("standardize_features", True)),
-                    include_centroid=bool(feature_mmd_cfg.get("include_centroid", True)),
-                    include_log_eigvals=bool(feature_mmd_cfg.get("include_log_eigvals", True)),
-                    include_participation_ratio=bool(feature_mmd_cfg.get("include_participation_ratio", True)),
-                    include_thickness=bool(feature_mmd_cfg.get("include_thickness", True)),
-                    include_kurtosis=bool(feature_mmd_cfg.get("include_kurtosis", True)),
-                    include_curvature=bool(feature_mmd_cfg.get("include_curvature", True)),
-                    thickness_tail_fraction=float(feature_mmd_cfg.get("thickness_tail_fraction", 0.25)),
-                    curvature_k_neighbors=int(feature_mmd_cfg.get("curvature_k_neighbors", 16)),
+                    standardize_features=feature_mmd_cfg.get("standardize_features", True),
                     eig_eps=float(feature_mmd_cfg.get("eig_eps", 1e-8)),
                 )
                 metrics[f"{split}/feature_mmd/class_{class_id}"] = float(mmd_feat)

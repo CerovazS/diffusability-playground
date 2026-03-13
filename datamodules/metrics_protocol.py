@@ -5,7 +5,7 @@ This module defines the interface that datamodules should implement
 to provide dataset-specific metric computation during validation/testing.
 
 The goal is to keep train.py generic while allowing each datamodule to
-define its own metrics (e.g., SWD/Energy/Feature-MMD for point clouds, FID for images).
+define its own metrics (e.g., SWD/Energy-U/Feature-MMD for vector samples, FID for images).
 """
 
 from abc import ABC, abstractmethod

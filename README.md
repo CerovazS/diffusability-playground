@@ -1,55 +1,159 @@
 # Diffusability Playground
 
-> **Research goal:** study diffusability of latent spaces by starting from synthetic datasets with controllable geometry, evaluating them with DiT models, and later moving to real audio and vision datasets.
+Study diffusability of latent spaces starting from synthetic datasets with controllable geometry, then move toward real audio and vision datasets.
 
-> [!NOTE]
-> This repository is under active construction.
+This repo is Hydra-driven and uses Astral `uv` for environment and dependency management. Use `uv add` for dependencies. For config-driven construction, use `hydra.utils.instantiate`; do not wire instantiation manually with OmegaConf.
 
-## Quick Context
-- **Env/deps:** use Astral `uv` (`uv add` only, no `pip install`).
-- **Training/config:** Hydra-driven experiments; main training config is `conf/config.yaml` with groups under `conf/data/`, `conf/model/`, `conf/trainer/`.
-- **Plotting:** `utils/plot_distribution.py` uses `conf/plot.yaml` and `conf/data/synth_pc.yaml`.
-- **Dataset docs:** detailed synthetic dataset documentation is available at `docs/synthetic_pointcloud_dataset.md` (attributes, sweep strategies, commands, and image gallery).
-- **Math foundations:** the mathematical formulation of synthetic generation and metrics (including Feature-MMD) is documented in `docs/synthetic_pointcloud_math_foundations.md`.
-- **Plot config ambient dim:** `conf/plot.yaml` defines `ambient_dim` so `${ambient_dim}` interpolations in `conf/data/synth_pc.yaml` resolve correctly during plotting.
-- **Anisotropy control:** `conf/config.yaml` defines `anisotropy_max_scale`, used by `conf/data/synth_pc.yaml` for single-class anisotropy configuration and easy multirun sweeps.
-- **Plot output dirs:** `utils/plot_distribution.py` now creates parent directories for `plot.out_name` automatically (e.g. `media_outputs/`).
-- **Doc plot configs:** use `conf/plot_dataset_docs.yaml` and `conf/plot_dataset_docs_anis.yaml` to generate reproducible sweep figures for documentation.
-- **DataModules:** `datamodules/synthetic_pointclouds.py` provides a Lightning DataModule around the synthetic point cloud dataset.
-- **SiT model flags:** `use_pos_embed` and `use_patch_embed` allow disabling positional embeddings and patchifying (e.g. for permutation-invariant sequences).
-- **Synthetic sweeps:** `conf/data/synth_pc.yaml` supports `class_sweeps` to expand a base class into multiple classes via a parameter grid.
-- **Current default synthetic setup:** `conf/data/synth_pc.yaml` is set to an anisotropy-focused ablation (`sweep_affine_anis`) with `K=1`, `separation=0.0`, and a single `anisotropy.max_scale` value by default (use Hydra multirun override to sweep).
-- **Anisotropy sweep override:** use `anisotropy_max_scale=...` in Hydra CLI multirun to launch one run per anisotropy value.
-- **Point-cloud training:** use `conf/data/synth_pc_datamodule.yaml` (wraps `conf/data/synth_pc.yaml`) and set `conf/model/mini_sit.yaml` for non-patchified, no-PE models.
-- **Class count auto-resolve:** `model.num_classes` is auto-resolved at runtime from the instantiated datamodule/dataset before model construction.
-- **Validation:** periodic validation with metrics computation; configure `trainer.check_val_every_n_epoch` (epochs, default `1`) or `trainer.val_check_interval` (steps).
-- **Validation reproducibility:** set `trainer.val_metrics_seed` to use fixed-noise validation sampling for stable metric curves (`null` keeps stochastic sampling).
-- **Best checkpoint selection:** configure `trainer.best_checkpoint.monitor`/`mode` in `conf/trainer/sit_trainer.yaml` to pick the best model on your chosen validation metric.
-- **Automatic post-fit test:** `trainer.test_after_fit` can run `trainer.test(...)` automatically at the end of training, using the selected best checkpoint.
-- **Lightning test API compatibility:** post-fit test now calls `trainer.test(model=..., datamodule=..., ckpt_path=...)` (not `module=...`) to match current Lightning `Trainer.test` signature.
-- **Metrics system:** generic metrics interface in `datamodules/metrics_protocol.py`; each DataModule implements `compute_metrics()` for dataset-specific evaluation.
-- **Point-cloud metrics:** SWD + Energy Distance + Feature-MMD are available; current point-cloud training defaults focus on Feature-MMD (`swd.enabled=false`, `energy_distance.enabled=false`, `feature_mmd.enabled=true`).
-- **Early stopping:** `trainer.early_stopping` monitors `val_loss` (validation L2 loss) and can stop if no improvement for a configured patience.
-- **Validation MMD:** Feature-MMD is still computed and logged during validation (`val/feature_mmd/class_*` and `val/feature_mmd_mean`) for analysis.
-- **Validation/Test metric parity:** test uses the same metric definitions and hyperparameters as validation (`compute_metrics(...)`), logged with `test/...` prefixes.
-- **Metric hyperparameters:** controlled in `conf/data/synth_pc_datamodule.yaml` under `metrics` (enable flags, SWD projections, Energy cloud-distance settings, Feature-MMD feature toggles/kernel params).
-- **Feature-MMD tracking:** keep `metrics.feature_mmd.gamma` fixed across validation epochs for comparable curves (avoid `gamma: null` when monitoring convergence over time).
-- **Sampling:** supports both **ODE** (dopri5, euler, heun) and **SDE** (Euler, Heun with configurable diffusion) via `model.sampling` config.
-- **Per-class validation loss tracking:** each run writes `results/<run>/metrics/class_registry.json` (class id -> sweep/params mapping) and appends `results/<run>/metrics/val_loss_by_class.jsonl` (time series by step/epoch).
-- **W&B metrics artifacts:** metric files are uploaded as artifact entries under `metrics/class_registry.json` and `metrics/val_loss_by_class.jsonl`.
-- **W&B run IDs:** run IDs are now left to W&B auto-generation (no deterministic `id` passed in `wandb.init`).
-- **W&B multirun lifecycle:** each Hydra job opens a fresh run (`reinit=True`) and closes it explicitly via `wandb.finish(...)` at job end.
-- **W&B rank handling:** logging helpers now detect whether `torch.distributed` is initialized, so they work correctly in both DDP and single-process runs.
-- **W&B interrupt handling:** `SIGINT/SIGTERM` (including `Ctrl+C`) now trigger immediate `wandb.finish(...)` + teardown to avoid stuck "live" runs.
-- **Validation generation logging:** validation/test sample generation now prints class-by-class progress lines (no tqdm hash/progress bar output).
-- **Point-cloud class params:** `orientation_per_mode` was removed from active configs/code path (old configs are ignored safely if the key is still present).
-- **Logger naming:** `utils/colorfull_logger.py` was renamed to `utils/colorful_logger.py`.
-- **Docs:** `https://docs.astral.sh/uv/` and `https://hydra.cc/docs/intro/`.
-- **Maintenance:** after each operation, update this README to reflect new changes or fix outdated info.
+## Setup
+
+```bash
+uv sync
+```
+
+Main references:
+- `https://docs.astral.sh/uv/`
+- `https://hydra.cc/docs/intro/`
+
+## Repo Layout
+
+```text
+conf/config.yaml                 # main experiment entrypoint
+conf/data/*.yaml                 # dataset / datamodule configs
+conf/model/*.yaml                # model configs
+conf/trainer/*.yaml              # trainer configs
+
+SiT/train.py                     # Hydra entrypoint + Lightning Trainer wiring
+SiT/lightning_module.py          # training / validation / test module
+SiT/eval_runner.py               # evaluation sampling + metric orchestration
+
+datamodules/synthetic_pointclouds.py  # synthetic vector dataset + datamodule
+utils/plot_distribution.py            # synthetic dataset visualization
+utils/plot_anisotropy_intrinsic_sweep.py  # aggregate sweep plots from saved runs
+
+docs/synthetic_pointcloud_dataset.md
+docs/synthetic_pointcloud_math_foundations.md
+```
+
+## Current Default Experiment
+
+`conf/config.yaml` is the main training config. Its defaults are:
+- `data: synth_pc_datamodule`
+- `model: mini_mlp`
+- `trainer: sit_trainer`
+
+The current synthetic setup is a single-class affine-subspace dataset with:
+- one sample = one vector in `R^D`
+- `ambient_dim` defined once in `conf/config.yaml`
+- `intrinsic_dim` defined once in `conf/config.yaml`
+- `anisotropy_max_scale` defined once in `conf/config.yaml`
+
+Those shared parameters are propagated via Hydra interpolations:
+- `ambient_dim -> data.in_channels`
+- `ambient_dim -> model.in_channels`
+- `ambient_dim -> class_sweeps[*].base.D`
+- `intrinsic_dim -> class_sweeps[*].base.d`
+- `anisotropy_max_scale -> class_sweeps[*].sweep.anisotropy.max_scale`
+
+`conf/data/synth_pc.yaml` uses `class_sweeps` with a single base class and a sweepable anisotropy value. In practice, Hydra multirun produces one training job per anisotropy setting.
+
+## Synthetic Dataset Notes
+
+`datamodules/synthetic_pointclouds.py` now works in the point-wise setting:
+- each sample is a single vector `[D]`, not a cloud `[N, D]`
+- class geometry is sampled once per class
+- per-sample randomness only resamples latent coordinates, component choice, and additive noise
+
+Supported geometric families:
+- `affine_subspace`
+- `sine_warp_subspace`
+- `mog`
+
+The default datamodule computes:
+- SWD
+- Energy-U
+- Feature-MMD
+
+These metrics are computed directly on vector samples `[N, D]`; the legacy cloud-level metric path has been removed.
+
+Per-run artifacts are written under `results/<experiment>/metrics/`:
+- `class_registry.json`
+- `val_loss_by_class.jsonl`
+
+## Training Commands
+
+Single run with the current defaults:
+
+```bash
+uv run python SiT/train.py
+```
+
+Single run with explicit synthetic controls:
+
+```bash
+uv run python SiT/train.py \
+  ambient_dim=8 \
+  intrinsic_dim=6 \
+  anisotropy_max_scale=4.0 \
+  trainer.strategy=auto
+```
+
+Ambient-8 anisotropy sweep over 5 levels:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
+  ambient_dim=8 \
+  intrinsic_dim=6 \
+  anisotropy_max_scale=1.0,2.0,4.0,8.0,16.0 \
+  trainer.results_dir=results/anisotropy_sweep_ambient8_d6 \
+  trainer.strategy=auto
+```
+
+Ambient-16 anisotropy sweep over the same 5 levels:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
+  ambient_dim=16 \
+  intrinsic_dim=6 \
+  anisotropy_max_scale=1.0,2.0,4.0,8.0,16.0 \
+  trainer.results_dir=results/anisotropy_sweep_ambient16_d6 \
+  trainer.strategy=auto
+```
+
+Notes:
+- `trainer.strategy=auto` is the safest override for single-GPU runs.
+- `model.num_classes` is resolved automatically at runtime from the instantiated datamodule.
+- W&B is enabled by default through `conf/trainer/sit_trainer.yaml`.
+
+## Plotting
+
+Visualize the current synthetic dataset:
+
+```bash
+uv run python utils/plot_distribution.py
+```
+
+Regenerate the documentation figures:
+
+```bash
+uv run python utils/plot_distribution.py --config-name plot_dataset_docs
+uv run python utils/plot_distribution.py --config-name plot_dataset_docs_anis
+```
+
+Aggregate anisotropy sweep results:
+
+```bash
+uv run python utils/plot_anisotropy_intrinsic_sweep.py \
+  --results-root results/anisotropy_sweep_ambient8_d6
+
+uv run python utils/plot_anisotropy_intrinsic_sweep.py \
+  --results-root results/anisotropy_sweep_ambient16_d6
+```
+
+The sweep plotting utility reads local training artifacts from `results/...` and matches them with local W&B logs under `wandb/`.
 
 ## Sampling Configuration
 
-The model supports both ODE and SDE sampling methods. Configure via `conf/model/*.yaml`:
+Sampling is configured in `conf/model/*.yaml`:
 
 ```yaml
 sampling:
@@ -62,27 +166,12 @@ sampling:
   sde:
     method: Euler  # Euler, Heun
     num_steps: 250
-    diffusion_form: SBDM  # constant, SBDM, sigma, linear, decreasing, increasing-decreasing
+    diffusion_form: SBDM
     diffusion_norm: 1.0
-    last_step: Mean  # null, Mean, Tweedie, Euler
+    last_step: Mean
     last_step_size: 0.04
 ```
 
-## Synthetic Point Clouds (brief)
-`synthetic_pointclouds.py` implements a deterministic, Hydra-friendly dataset generator.  
-Each sample is a point cloud `x ∈ R^{N×D}` with label `y`, produced by selecting a class and a mixture component, sampling intrinsic coordinates `z` from a configurable tail distribution, mapping them into ambient space, and adding thickness noise.  
-It supports multiple geometric families (affine subspaces, sine-warped subspaces, and MoG) with per-class controls for intrinsic dimension, ambient dimension, number of modes, separation, anisotropy, curvature, and tail heaviness.
+## Maintenance
 
-## Architecture Overview
-
-```
-SiT/train.py                 # Hydra entrypoint + Trainer wiring
-SiT/lightning_module.py      # SiTLightningModule (train/val/test hooks)
-SiT/eval_runner.py           # Metric orchestration + eval sampling/logging
-SiT/class_registry.py        # Class registry serialization helpers
-
-datamodules/
-    ├── metrics_protocol.py       # Interface: MetricsCapableDataModule, EvalConfig
-    ├── synthetic_pointclouds.py  # collect_real_samples + compute_metrics (SWD/Energy-U/Feature-MMD)
-    └── image_datamodule.py       # collect_real_samples + compute_metrics (placeholder for FID)
-```
+When repo behavior changes, update this README so commands, config names, and outputs remain accurate.

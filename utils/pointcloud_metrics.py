@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-"""Point cloud metrics utilities.
+"""Distribution metrics for vector-valued samples.
 
 Implemented metrics:
-- Sliced Wasserstein Distance (SWD) on flattened points
-- Energy Distance (U-statistic) on pairwise cloud distances
-- RBF-MMD on invariant per-cloud feature vectors
+- Sliced Wasserstein Distance (SWD) on samples in R^D
+- Energy Distance (U-statistic) on sample pairs
+- RBF-MMD on raw vector samples
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import ot
@@ -22,35 +22,32 @@ def _as_f32_contig(x: np.ndarray) -> np.ndarray:
     return x
 
 
-def _validate_clouds(clouds: np.ndarray, name: str) -> np.ndarray:
-    clouds = _as_f32_contig(clouds)
-    if clouds.ndim != 3:
-        raise ValueError(f"{name} must have shape [N_clouds, N_points, D], got {clouds.shape}.")
-    if clouds.shape[0] == 0:
-        raise ValueError(f"{name} must contain at least one cloud.")
-    if clouds.shape[1] < 2:
-        raise ValueError(f"{name} must contain at least two points per cloud.")
-    return clouds
+def _as_f64_contig(x: np.ndarray) -> np.ndarray:
+    """Convert to contiguous float64 array."""
+    x = np.asarray(x, dtype=np.float64)
+    if not x.flags["C_CONTIGUOUS"]:
+        x = np.ascontiguousarray(x)
+    return x
 
 
-def _subsample_clouds(clouds: np.ndarray, max_clouds: Optional[int], seed: int) -> np.ndarray:
-    clouds = _validate_clouds(clouds, "clouds")
-    if max_clouds is None or max_clouds >= clouds.shape[0]:
-        return clouds
-    if max_clouds <= 0:
-        raise ValueError("max_clouds must be > 0 when provided.")
+def _validate_samples(samples: np.ndarray, name: str) -> np.ndarray:
+    samples = _as_f32_contig(samples)
+    if samples.ndim != 2:
+        raise ValueError(f"{name} must have shape [N_samples, D], got {samples.shape}.")
+    if samples.shape[0] == 0:
+        raise ValueError(f"{name} must contain at least one sample.")
+    return samples
+
+
+def _subsample_samples(samples: np.ndarray, max_samples: Optional[int], seed: int) -> np.ndarray:
+    samples = _validate_samples(samples, "samples")
+    if max_samples is None or max_samples >= samples.shape[0]:
+        return samples
+    if max_samples <= 0:
+        raise ValueError("max_samples must be > 0 when provided.")
     rng = np.random.default_rng(seed)
-    idx = rng.choice(clouds.shape[0], size=max_clouds, replace=False)
-    return clouds[idx]
-
-
-def _downsample_points(cloud: np.ndarray, num_points: Optional[int], rng: np.random.Generator) -> np.ndarray:
-    if num_points is None or num_points >= cloud.shape[0]:
-        return cloud
-    if num_points <= 1:
-        raise ValueError("downsample_points must be > 1 when provided.")
-    idx = rng.choice(cloud.shape[0], size=num_points, replace=False)
-    return cloud[idx]
+    idx = rng.choice(samples.shape[0], size=max_samples, replace=False)
+    return samples[idx]
 
 
 def _pairwise_sqeuclidean(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -60,80 +57,34 @@ def _pairwise_sqeuclidean(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return np.maximum(out, 0.0)
 
 
-def chamfer_distance_l2(a: np.ndarray, b: np.ndarray, *, squared: bool = False, eps: float = 1e-12) -> float:
-    """Symmetric Chamfer distance between two clouds.
-
-    Args:
-        a: Cloud with shape [Na, D]
-        b: Cloud with shape [Nb, D]
-        squared: If True, uses squared L2 costs. Otherwise uses L2 costs.
-        eps: Numerical epsilon for sqrt stabilization.
-    """
-    a = _as_f32_contig(a)
-    b = _as_f32_contig(b)
-    if a.ndim != 2 or b.ndim != 2:
-        raise ValueError("a and b must have shape [N_points, D].")
-    if a.shape[1] != b.shape[1]:
-        raise ValueError(f"Dimension mismatch: a D={a.shape[1]} vs b D={b.shape[1]}")
-
-    dist2 = _pairwise_sqeuclidean(a, b)
-    if squared:
-        dist = dist2
-    else:
-        dist = np.sqrt(dist2 + eps)
-    return float(np.min(dist, axis=1).mean() + np.min(dist, axis=0).mean())
-
-
-def pairwise_cloud_distance_matrix(
-    clouds_a: np.ndarray,
-    clouds_b: np.ndarray,
+def pairwise_sample_distance_matrix(
+    samples_a: np.ndarray,
+    samples_b: np.ndarray,
     *,
-    distance: str = "chamfer_l2",
-    downsample_points: Optional[int] = None,
-    seed: int = 0,
+    distance: str = "l2",
     symmetric: bool = False,
+    eps: float = 1e-12,
 ) -> np.ndarray:
-    """Pairwise cloud-distance matrix.
+    samples_a = _validate_samples(samples_a, "samples_a")
+    samples_b = _validate_samples(samples_b, "samples_b")
+    if samples_a.shape[1] != samples_b.shape[1]:
+        raise ValueError(f"D mismatch: samples_a D={samples_a.shape[1]} vs samples_b D={samples_b.shape[1]}")
+    if distance not in {"l2", "l2_squared"}:
+        raise ValueError(f"Unsupported sample distance: {distance}")
 
-    Currently supported distances:
-    - ``chamfer_l2``
-    - ``chamfer_l2_squared``
-    """
-    clouds_a = _validate_clouds(clouds_a, "clouds_a")
-    clouds_b = _validate_clouds(clouds_b, "clouds_b")
-    if clouds_a.shape[2] != clouds_b.shape[2]:
-        raise ValueError(f"D mismatch: clouds_a D={clouds_a.shape[2]} vs clouds_b D={clouds_b.shape[2]}")
-
-    if distance not in {"chamfer_l2", "chamfer_l2_squared"}:
-        raise ValueError(f"Unsupported cloud distance: {distance}")
-
-    rng = np.random.default_rng(seed)
-    na, nb = clouds_a.shape[0], clouds_b.shape[0]
+    na, nb = samples_a.shape[0], samples_b.shape[0]
     if symmetric and na != nb:
-        raise ValueError("symmetric=True requires clouds_a and clouds_b to have the same number of clouds.")
-    out = np.zeros((na, nb), dtype=np.float32)
+        raise ValueError("symmetric=True requires samples_a and samples_b to have the same number of samples.")
 
-    a_ds = [_downsample_points(clouds_a[i], downsample_points, rng) for i in range(na)]
-    if symmetric:
-        b_ds = a_ds
+    dist2 = _pairwise_sqeuclidean(samples_a, samples_b)
+    if distance == "l2_squared":
+        out = dist2
     else:
-        b_ds = [_downsample_points(clouds_b[j], downsample_points, rng) for j in range(nb)]
-
-    squared = distance == "chamfer_l2_squared"
+        out = np.sqrt(dist2 + eps)
 
     if symmetric:
-        for i in range(na):
-            out[i, i] = 0.0
-            for j in range(i + 1, nb):
-                d = chamfer_distance_l2(a_ds[i], b_ds[j], squared=squared)
-                out[i, j] = d
-                out[j, i] = d
-        return out
-
-    for i in range(na):
-        for j in range(nb):
-            out[i, j] = chamfer_distance_l2(a_ds[i], b_ds[j], squared=squared)
-    return out
+        np.fill_diagonal(out, 0.0)
+    return out.astype(np.float32, copy=False)
 
 
 def energy_distance_u_statistic_from_matrices(
@@ -141,12 +92,7 @@ def energy_distance_u_statistic_from_matrices(
     D_yy: np.ndarray,
     D_xy: np.ndarray,
 ) -> float:
-    """Unbiased U-statistic estimator for Energy Distance.
-
-    Computes:
-        2 E[d(X,Y)] - E[d(X,X')] - E[d(Y,Y')]
-    where within-sample expectations exclude diagonal terms.
-    """
+    """Unbiased U-statistic estimator for Energy Distance."""
     D_xx = _as_f32_contig(D_xx)
     D_yy = _as_f32_contig(D_yy)
     D_xy = _as_f32_contig(D_xy)
@@ -163,148 +109,112 @@ def energy_distance_u_statistic_from_matrices(
     mean_xy = float(D_xy.mean())
     mean_xx_offdiag = sum_xx_offdiag / float(n * (n - 1))
     mean_yy_offdiag = sum_yy_offdiag / float(m * (m - 1))
-
     return float(2.0 * mean_xy - mean_xx_offdiag - mean_yy_offdiag)
 
 
-def energy_distance_u_statistic_clouds(
-    real_clouds: np.ndarray,
-    gen_clouds: np.ndarray,
+def energy_distance_u_statistic_samples(
+    real_samples: np.ndarray,
+    gen_samples: np.ndarray,
     *,
-    distance: str = "chamfer_l2",
-    max_clouds: Optional[int] = 256,
-    downsample_points: Optional[int] = None,
+    distance: str = "l2",
+    max_samples: Optional[int] = 256,
     seed: int = 0,
 ) -> float:
-    """Energy Distance (U-statistic) between two cloud sets."""
-    real_clouds = _subsample_clouds(real_clouds, max_clouds=max_clouds, seed=seed)
-    gen_clouds = _subsample_clouds(gen_clouds, max_clouds=max_clouds, seed=seed + 1)
+    """Energy Distance (U-statistic) between two vector-sample sets."""
+    real_samples = _subsample_samples(real_samples, max_samples=max_samples, seed=seed)
+    gen_samples = _subsample_samples(gen_samples, max_samples=max_samples, seed=seed + 1)
 
-    D_xx = pairwise_cloud_distance_matrix(
-        real_clouds,
-        real_clouds,
+    D_xx = pairwise_sample_distance_matrix(
+        real_samples,
+        real_samples,
         distance=distance,
-        downsample_points=downsample_points,
-        seed=seed,
         symmetric=True,
     )
-    D_yy = pairwise_cloud_distance_matrix(
-        gen_clouds,
-        gen_clouds,
+    D_yy = pairwise_sample_distance_matrix(
+        gen_samples,
+        gen_samples,
         distance=distance,
-        downsample_points=downsample_points,
-        seed=seed + 1,
         symmetric=True,
     )
-    D_xy = pairwise_cloud_distance_matrix(
-        real_clouds,
-        gen_clouds,
+    D_xy = pairwise_sample_distance_matrix(
+        real_samples,
+        gen_samples,
         distance=distance,
-        downsample_points=downsample_points,
-        seed=seed + 2,
         symmetric=False,
     )
     return energy_distance_u_statistic_from_matrices(D_xx, D_yy, D_xy)
 
 
-def _radial_kurtosis_excess(x_centered: np.ndarray, eps: float = 1e-8) -> float:
-    r = np.linalg.norm(x_centered, axis=1)
-    r_std = float(r.std())
-    if r_std < eps:
-        return 0.0
-    z = (r - r.mean()) / (r_std + eps)
-    return float(np.mean(z**4) - 3.0)
+def _resolve_standardize_mode(standardize_features: bool | str) -> Literal["none", "pooled", "reference"]:
+    if isinstance(standardize_features, bool):
+        return "pooled" if standardize_features else "none"
+
+    mode = str(standardize_features).strip().lower()
+    aliases = {
+        "none": "none",
+        "false": "none",
+        "off": "none",
+        "pooled": "pooled",
+        "joint": "pooled",
+        "true": "pooled",
+        "reference": "reference",
+        "real": "reference",
+    }
+    if mode not in aliases:
+        raise ValueError(f"Unsupported standardize_features mode: {standardize_features}")
+    return aliases[mode]
 
 
-def _local_surface_variation_curvature(cloud: np.ndarray, k_neighbors: int, eps: float = 1e-8) -> float:
-    """Average local surface-variation curvature from kNN covariance spectra."""
-    n, _ = cloud.shape
-    if n <= 2:
-        return 0.0
-
-    k = int(max(2, min(k_neighbors, n - 1)))
-    values = np.zeros(n, dtype=np.float32)
-    for i in range(n):
-        d2 = np.sum((cloud - cloud[i]) ** 2, axis=1)
-        nn = np.argpartition(d2, k)[: (k + 1)]
-        nn = nn[nn != i]
-        if nn.size > k:
-            nn = nn[:k]
-        neigh = cloud[nn]
-        yc = neigh - neigh.mean(axis=0, keepdims=True)
-        cov = (yc.T @ yc) / float(max(yc.shape[0] - 1, 1))
-        eigvals = np.linalg.eigvalsh(cov)
-        tr = float(max(eigvals.sum(), 0.0))
-        if tr <= eps:
-            values[i] = 0.0
-        else:
-            values[i] = float(max(eigvals[0], 0.0) / (tr + eps))
-    return float(values.mean())
-
-
-def pointcloud_invariant_features(
-    clouds: np.ndarray,
+def _standardize_feature_pair(
+    feat_real: np.ndarray,
+    feat_gen: np.ndarray,
     *,
-    include_centroid: bool = True,
-    include_log_eigvals: bool = True,
-    include_participation_ratio: bool = True,
-    include_thickness: bool = True,
-    include_kurtosis: bool = True,
-    include_curvature: bool = True,
-    thickness_tail_fraction: float = 0.25,
-    curvature_k_neighbors: int = 16,
-    eig_eps: float = 1e-8,
-) -> np.ndarray:
-    """Extract per-cloud feature vectors.
+    mode: Literal["none", "pooled", "reference"],
+    eps: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    feat_real = _as_f64_contig(feat_real)
+    feat_gen = _as_f64_contig(feat_gen)
 
-    Feature blocks (toggle-able):
-    - centroid [D]
-    - log-eigenvalue spectrum of covariance [D]
-    - participation ratio [1]
-    - thickness from covariance tail [1]
-    - radial kurtosis excess [1]
-    - local curvature statistic [1]
-    """
-    clouds = _validate_clouds(clouds, "clouds")
-    if not (0.0 < thickness_tail_fraction <= 1.0):
-        raise ValueError("thickness_tail_fraction must be in (0, 1].")
-    if curvature_k_neighbors < 2:
-        raise ValueError("curvature_k_neighbors must be >= 2.")
+    if mode == "none":
+        return feat_real, feat_gen
 
-    feats = []
-    for i in range(clouds.shape[0]):
-        x = clouds[i]
-        mu = x.mean(axis=0)
-        xc = x - mu
-        cov = (xc.T @ xc) / float(max(x.shape[0] - 1, 1))
-        eigvals = np.linalg.eigvalsh(cov)
-        eigvals = np.maximum(eigvals[::-1], 0.0)  # descending
+    stats_source = feat_real if mode == "reference" else np.concatenate([feat_real, feat_gen], axis=0)
+    mu = stats_source.mean(axis=0, keepdims=True)
+    sigma = stats_source.std(axis=0, keepdims=True)
+    sigma = np.where(sigma < eps, 1.0, sigma)
+    return (feat_real - mu) / sigma, (feat_gen - mu) / sigma
 
-        blocks = []
-        if include_centroid:
-            blocks.append(mu.astype(np.float32, copy=False))
-        if include_log_eigvals:
-            blocks.append(np.log(eigvals + eig_eps).astype(np.float32, copy=False))
-        if include_participation_ratio:
-            num = float(eigvals.sum() ** 2)
-            den = float(np.sum(eigvals**2) + eig_eps)
-            pr = num / den
-            blocks.append(np.asarray([pr], dtype=np.float32))
-        if include_thickness:
-            tail_k = max(1, int(round(eigvals.shape[0] * thickness_tail_fraction)))
-            thickness = float(np.sqrt(np.mean(eigvals[-tail_k:]) + eig_eps))
-            blocks.append(np.asarray([thickness], dtype=np.float32))
-        if include_kurtosis:
-            blocks.append(np.asarray([_radial_kurtosis_excess(xc, eps=eig_eps)], dtype=np.float32))
-        if include_curvature:
-            curv = _local_surface_variation_curvature(x, k_neighbors=curvature_k_neighbors, eps=eig_eps)
-            blocks.append(np.asarray([curv], dtype=np.float32))
 
-        if not blocks:
-            raise ValueError("At least one feature block must be enabled for invariant feature extraction.")
-        feats.append(np.concatenate(blocks, axis=0))
+def _resolve_gamma(
+    D_xx: np.ndarray,
+    D_xy: np.ndarray,
+    *,
+    gamma: Optional[float],
+    gamma_mode: str,
+    feature_dim: int,
+    eps: float,
+) -> float:
+    if gamma is not None:
+        return float(gamma)
 
-    return _as_f32_contig(np.stack(feats, axis=0))
+    mode = str(gamma_mode).strip().lower()
+    if mode == "median_cross":
+        positive = D_xy[D_xy > 0]
+        if positive.size == 0:
+            return 1.0
+        return 1.0 / (float(np.median(positive)) + eps)
+
+    if mode == "median_reference":
+        upper = D_xx[np.triu_indices_from(D_xx, k=1)]
+        positive = upper[upper > 0]
+        if positive.size == 0:
+            return 1.0
+        return 1.0 / (float(np.median(positive)) + eps)
+
+    if mode == "feature_dim":
+        return 1.0 / float(max(feature_dim, 1))
+
+    raise ValueError(f"Unsupported gamma_mode: {gamma_mode}")
 
 
 def mmd_rbf_from_features(
@@ -312,13 +222,14 @@ def mmd_rbf_from_features(
     features_y: np.ndarray,
     *,
     gamma: Optional[float] = None,
+    gamma_mode: str = "median_cross",
     gamma_scale: float = 1.0,
     unbiased: bool = True,
     eps: float = 1e-12,
 ) -> float:
     """Compute RBF-MMD on feature vectors."""
-    features_x = _as_f32_contig(features_x)
-    features_y = _as_f32_contig(features_y)
+    features_x = _as_f64_contig(features_x)
+    features_y = _as_f64_contig(features_y)
     if features_x.ndim != 2 or features_y.ndim != 2:
         raise ValueError("features_x and features_y must have shape [N, F] and [M, F].")
     if features_x.shape[1] != features_y.shape[1]:
@@ -332,14 +243,14 @@ def mmd_rbf_from_features(
     D_yy = _pairwise_sqeuclidean(features_y, features_y)
     D_xy = _pairwise_sqeuclidean(features_x, features_y)
 
-    if gamma is None:
-        positive = D_xy[D_xy > 0]
-        if positive.size == 0:
-            gamma_eff = 1.0
-        else:
-            gamma_eff = 1.0 / (float(np.median(positive)) + eps)
-    else:
-        gamma_eff = float(gamma)
+    gamma_eff = _resolve_gamma(
+        D_xx,
+        D_xy,
+        gamma=gamma,
+        gamma_mode=gamma_mode,
+        feature_dim=features_x.shape[1],
+        eps=eps,
+    )
     gamma_eff *= float(gamma_scale)
 
     K_xx = np.exp(-gamma_eff * D_xx)
@@ -360,67 +271,34 @@ def mmd_rbf_from_features(
     return float(K_xx.mean() + K_yy.mean() - 2.0 * K_xy.mean())
 
 
-def mmd_rbf_invariant_features(
-    real_clouds: np.ndarray,
-    gen_clouds: np.ndarray,
+def mmd_rbf_samples(
+    real_samples: np.ndarray,
+    gen_samples: np.ndarray,
     *,
-    max_clouds: Optional[int] = 512,
+    max_samples: Optional[int] = 512,
     seed: int = 0,
     gamma: Optional[float] = None,
+    gamma_mode: str = "median_cross",
     gamma_scale: float = 1.0,
     unbiased: bool = True,
-    standardize_features: bool = True,
-    include_centroid: bool = True,
-    include_log_eigvals: bool = True,
-    include_participation_ratio: bool = True,
-    include_thickness: bool = True,
-    include_kurtosis: bool = True,
-    include_curvature: bool = True,
-    thickness_tail_fraction: float = 0.25,
-    curvature_k_neighbors: int = 16,
+    standardize_features: bool | str = True,
     eig_eps: float = 1e-8,
 ) -> float:
-    """RBF-MMD on invariant per-cloud features."""
-    real_clouds = _subsample_clouds(real_clouds, max_clouds=max_clouds, seed=seed)
-    gen_clouds = _subsample_clouds(gen_clouds, max_clouds=max_clouds, seed=seed + 1)
+    """RBF-MMD on raw vector samples."""
+    real_samples = _subsample_samples(real_samples, max_samples=max_samples, seed=seed)
+    gen_samples = _subsample_samples(gen_samples, max_samples=max_samples, seed=seed + 1)
 
-    feat_real = pointcloud_invariant_features(
-        real_clouds,
-        include_centroid=include_centroid,
-        include_log_eigvals=include_log_eigvals,
-        include_participation_ratio=include_participation_ratio,
-        include_thickness=include_thickness,
-        include_kurtosis=include_kurtosis,
-        include_curvature=include_curvature,
-        thickness_tail_fraction=thickness_tail_fraction,
-        curvature_k_neighbors=curvature_k_neighbors,
-        eig_eps=eig_eps,
+    feat_real, feat_gen = _standardize_feature_pair(
+        real_samples,
+        gen_samples,
+        mode=_resolve_standardize_mode(standardize_features),
+        eps=eig_eps,
     )
-    feat_gen = pointcloud_invariant_features(
-        gen_clouds,
-        include_centroid=include_centroid,
-        include_log_eigvals=include_log_eigvals,
-        include_participation_ratio=include_participation_ratio,
-        include_thickness=include_thickness,
-        include_kurtosis=include_kurtosis,
-        include_curvature=include_curvature,
-        thickness_tail_fraction=thickness_tail_fraction,
-        curvature_k_neighbors=curvature_k_neighbors,
-        eig_eps=eig_eps,
-    )
-
-    if standardize_features:
-        both = np.concatenate([feat_real, feat_gen], axis=0)
-        mu = both.mean(axis=0, keepdims=True)
-        sigma = both.std(axis=0, keepdims=True)
-        sigma = np.where(sigma < eig_eps, 1.0, sigma)
-        feat_real = (feat_real - mu) / sigma
-        feat_gen = (feat_gen - mu) / sigma
-
     return mmd_rbf_from_features(
         feat_real,
         feat_gen,
         gamma=gamma,
+        gamma_mode=gamma_mode,
         gamma_scale=gamma_scale,
         unbiased=unbiased,
         eps=eig_eps,
@@ -433,17 +311,7 @@ def sliced_wasserstein_distance(
     num_projections: int = 256,
     seed: int = 0,
 ) -> float:
-    """Compute SWD between two flattened point sets.
-
-    Args:
-        real_points: Real points with shape [N, D]
-        gen_points: Generated points with shape [M, D]
-        num_projections: Number of random 1D projections
-        seed: Random seed for projection sampling
-
-    Returns:
-        Sliced Wasserstein distance.
-    """
+    """Compute SWD between two point sets in R^D."""
     real_points = _as_f32_contig(real_points)
     gen_points = _as_f32_contig(gen_points)
 
@@ -468,11 +336,9 @@ def sliced_wasserstein_distance(
 
 __all__ = [
     "sliced_wasserstein_distance",
-    "chamfer_distance_l2",
-    "pairwise_cloud_distance_matrix",
+    "pairwise_sample_distance_matrix",
     "energy_distance_u_statistic_from_matrices",
-    "energy_distance_u_statistic_clouds",
-    "pointcloud_invariant_features",
+    "energy_distance_u_statistic_samples",
     "mmd_rbf_from_features",
-    "mmd_rbf_invariant_features",
+    "mmd_rbf_samples",
 ]
