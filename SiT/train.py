@@ -138,15 +138,27 @@ def main(cfg: DictConfig):
     module = SiTLightningModule(cfg, experiment_name, experiment_dir)
 
     best_ckpt_callback = None
-    callbacks = [
-        ModelCheckpoint(
-            dirpath=checkpoint_dir,
-            filename="{step:07d}",
-            every_n_train_steps=cfg.trainer.ckpt_every,
-            save_top_k=-1,
-            save_last=False,
-        )
-    ]
+    callbacks = []
+
+    ckpt_every_steps = getattr(cfg.trainer, "ckpt_every", None)
+    ckpt_every_epochs = getattr(cfg.trainer, "ckpt_every_n_epochs", None)
+    if ckpt_every_steps is not None or ckpt_every_epochs is not None:
+        checkpoint_kwargs = {
+            "dirpath": checkpoint_dir,
+            "save_top_k": -1,
+            "save_last": False,
+        }
+        if ckpt_every_epochs is not None:
+            checkpoint_kwargs.update(
+                filename="{epoch:03d}-{step:07d}",
+                every_n_epochs=int(ckpt_every_epochs),
+            )
+        else:
+            checkpoint_kwargs.update(
+                filename="{step:07d}",
+                every_n_train_steps=int(ckpt_every_steps),
+            )
+        callbacks.append(ModelCheckpoint(**checkpoint_kwargs))
 
     best_ckpt_cfg = getattr(cfg.trainer, "best_checkpoint", None)
     if best_ckpt_cfg is not None and bool(best_ckpt_cfg.get("enabled", True)):

@@ -4,7 +4,8 @@ global_batch_size: 256
 global_seed: 0
 num_workers: 4
 log_every: 100
-ckpt_every: 50000
+ckpt_every: null
+ckpt_every_n_epochs: 5
 sample_every: 10000
 use_wandb: true
 wandb_entity: ar_spectra

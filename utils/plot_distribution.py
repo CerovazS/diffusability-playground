@@ -28,10 +28,10 @@ from datamodules.synthetic_pointclouds import collate_pointclouds
 
 @dataclass
 class PlotConfig:
-    # How many points (total) to aggregate per class before plotting KDE
+    # How many samples to aggregate per class before plotting KDE
     max_points_per_class: int = 20000
 
-    # How many point-cloud samples to scan at most (safety stop)
+    # How many batches to scan at most (safety stop)
     max_batches: int = 2000
 
     # Projection to 2D: "pca" uses global PCA across all collected points.
@@ -81,7 +81,7 @@ def _plot_classes(
     class_ids,
     out_name: str,
 ):
-    # Collect points per class
+    # Collect samples per class
     points_by_class: Dict[int, List[torch.Tensor]] = {y: [] for y in class_ids}
     counts: Dict[int, int] = {y: 0 for y in class_ids}
 
@@ -107,20 +107,17 @@ def _plot_classes(
         if batches_seen > plot_cfg.max_batches or all_full():
             break
 
-        xb = xb.to(device)  # [B, N, D]
+        xb = xb.to(device)  # [B, D]
         yb = yb.to(device)  # [B]
 
-        B, N, D = xb.shape
+        B, D = xb.shape
         for i in range(B):
             y = int(yb[i].item())
             if y not in points_by_class or class_full(y):
                 continue
 
-            x_i = xb[i]  # [N, D]
-            remaining = plot_cfg.max_points_per_class - counts[y]
-            take = min(remaining, N)
-            points_by_class[y].append(x_i[:take].contiguous())
-            counts[y] += take
+            points_by_class[y].append(xb[i].unsqueeze(0).contiguous())
+            counts[y] += 1
 
         if batches_seen % 50 == 0:
             info(f"Collected points per class: {counts}")
@@ -129,7 +126,7 @@ def _plot_classes(
     Xc: Dict[int, torch.Tensor] = {}
     for y in class_ids:
         if len(points_by_class[y]) == 0:
-            raise RuntimeError(f"No points collected for class {y}. Check your dataset sampling / labels.")
+            raise RuntimeError(f"No samples collected for class {y}. Check your dataset sampling / labels.")
         Xc[y] = torch.cat(points_by_class[y], dim=0).to(torch.float32)  # [P, D]
 
     # Build a single global matrix for PCA (same axes across classes)

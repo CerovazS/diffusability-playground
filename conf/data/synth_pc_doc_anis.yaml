@@ -5,7 +5,7 @@ cfg:
   _target_: datamodules.synthetic_pointclouds.DatasetConfig
   _convert_: all
   num_samples: 12000
-  points_per_cloud: 128
+  points_per_cloud: 1
   base_seed: 1234
   device: cpu
   samples_per_class: null

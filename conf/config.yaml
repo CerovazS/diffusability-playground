@@ -1,6 +1,6 @@
 defaults:
   - data: synth_pc_datamodule
-  - model: mini_sit
+  - model: mini_mlp
   - trainer: sit_trainer
   - _self_
 
@@ -9,8 +9,9 @@ defaults:
 # =============================================================================
 # Ambient/embedding dimension for point clouds (D in class params)
 # This should be consistent across data config and model config
-ambient_dim: 8
+ambient_dim: 16
 anisotropy_max_scale: 1.0
+intrinsic_dim: 6
 
 ckpt: null
 

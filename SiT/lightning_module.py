@@ -109,6 +109,21 @@ class SiTLightningModule(LightningModule):
         self._val_loss_sums: torch.Tensor | None = None
         self._val_loss_counts: torch.Tensor | None = None
 
+    def _resolve_non_vae_sample_shape(self) -> tuple[int, ...]:
+        datamodule = getattr(self.trainer, "datamodule", None)
+        if datamodule is not None and hasattr(datamodule, "get_eval_config"):
+            try:
+                sample_shape = tuple(int(dim) for dim in datamodule.get_eval_config().sample_shape)
+                if sample_shape:
+                    return sample_shape
+            except (AttributeError, RuntimeError, ValueError, TypeError):
+                pass
+
+        layout = str(getattr(self.cfg.model, "data_layout", "tokens")).strip().lower()
+        if layout == "vector":
+            return (int(self.cfg.model.in_channels),)
+        return (int(getattr(self.cfg.model, "input_size", 1)), int(self.cfg.model.in_channels))
+
     def is_main_process(self) -> bool:
         return is_main_process()
 
@@ -129,7 +144,7 @@ class SiTLightningModule(LightningModule):
         if self.use_vae:
             zs = torch.randn(local_batch_size, 4, self.latent_size, self.latent_size, device=self.device)
         else:
-            zs = torch.randn(local_batch_size, self.latent_size, self.cfg.model.in_channels, device=self.device)
+            zs = torch.randn(local_batch_size, *self._resolve_non_vae_sample_shape(), device=self.device)
 
         if self.use_cfg:
             zs = torch.cat([zs, zs], 0)

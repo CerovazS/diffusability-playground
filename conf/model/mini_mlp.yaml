@@ -1,0 +1,32 @@
+name: mini-MLP
+# Auto-resolved from datamodule/dataset at runtime in SiT/train.py
+num_classes: null
+cfg_scale: 1.0
+vae: ema
+in_channels: ${data.in_channels}
+data_layout: vector
+# Kept for compatibility with non-VAE sampling code paths; unused by the vector MLP.
+input_size: 1
+
+transport:
+  path_type: Linear
+  prediction: velocity
+  loss_weight: null
+  train_eps: null
+  sample_eps: null
+
+sampling:
+  mode: ODE
+  ode:
+    method: dopri5
+    num_steps: 50
+    atol: 1.0e-6
+    rtol: 1.0e-3
+    reverse: false
+  sde:
+    method: Euler
+    num_steps: 250
+    diffusion_form: SBDM
+    diffusion_norm: 1.0
+    last_step: Mean
+    last_step_size: 0.04

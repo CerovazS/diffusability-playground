@@ -6,9 +6,11 @@ cfg:
   _target_: datamodules.synthetic_pointclouds.DatasetConfig
   _convert_: all
   num_samples: 10000
-  points_per_cloud: 128
+  # Legacy field kept only for backward compatibility; each sample is now a single point in R^D.
+  points_per_cloud: 1
   # num_classes is auto-computed from class_sweeps/classes and auto-resolved in train wiring.
   base_seed: 1234
+  geometry_seed: 0
   device: cpu  # Must be cpu for DataLoader multiprocessing; GPU transfer happens in training loop
   samples_per_class: null
 
@@ -17,7 +19,7 @@ cfg:
     - name: sweep_affine_anis
       base:
         family: affine_subspace
-        d: 6  # intrinsic dimension (must be <= D)
+        d: ${intrinsic_dim}  # intrinsic dimension (must be <= D)
         D: ${ambient_dim}
         K: 1
         thickness: 0.02

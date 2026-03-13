@@ -4,7 +4,10 @@ __pycache__/
 *.pyc
 .vscode/
 agent.md
-media_outputs/
 logs/
 wandb/
 AGENTS.override.md
+results/*
+results/
+multirun/
+train.log

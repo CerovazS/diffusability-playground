@@ -17,6 +17,10 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+def modulate_vector(x, shift, scale):
+    return x * (1 + scale) + shift
+
+
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
 #################################################################################
@@ -138,6 +142,120 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
         return x
 
+class MLP(nn.Module):
+    """
+    A simple MLP with two linear layers and a SiLU activation.
+    """
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.SiLU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+class VectorMLPBlock(nn.Module):
+    """Residual MLP block with adaLN-style conditioning for vector inputs."""
+    def __init__(self, hidden_size, mlp_ratio=4.0):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        hidden_features = int(hidden_size * mlp_ratio)
+        self.mlp = MLP(hidden_size, hidden_features=hidden_features, out_features=hidden_size)
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 3 * hidden_size, bias=True),
+        )
+
+    def forward(self, x, c):
+        shift, scale, gate = self.modulation(c).chunk(3, dim=-1)
+        h = modulate_vector(self.norm(x), shift, scale)
+        return x + gate * self.mlp(h)
+
+
+class VectorMLP(nn.Module):
+    """Conditional MLP backbone for single ambient-space vectors."""
+    def __init__(
+        self,
+        in_channels=4,
+        hidden_size=256,
+        depth=6,
+        mlp_ratio=4.0,
+        class_dropout_prob=0.1,
+        num_classes=1000,
+        learn_sigma=True,
+        **_,
+    ):
+        super().__init__()
+        self.learn_sigma = learn_sigma
+        self.in_channels = in_channels
+        self.out_channels = in_channels * 2 if learn_sigma else in_channels
+
+        self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)
+        self.t_embedder = TimestepEmbedder(hidden_size)
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
+        self.blocks = nn.ModuleList([VectorMLPBlock(hidden_size, mlp_ratio=mlp_ratio) for _ in range(depth)])
+        self.final_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.final_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size, bias=True),
+        )
+        self.final_linear = nn.Linear(hidden_size, self.out_channels, bias=True)
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+
+        self.apply(_basic_init)
+        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        for block in self.blocks:
+            nn.init.constant_(block.modulation[-1].weight, 0)
+            nn.init.constant_(block.modulation[-1].bias, 0)
+
+        nn.init.constant_(self.final_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_linear.weight, 0)
+        nn.init.constant_(self.final_linear.bias, 0)
+
+    def forward(self, x, t, y):
+        if x.ndim != 2:
+            raise ValueError(f"VectorMLP expects inputs of shape [B, D], got {tuple(x.shape)}")
+        x = self.x_embedder(x)
+        t = self.t_embedder(t)
+        y = self.y_embedder(y, self.training)
+        c = t + y
+        for block in self.blocks:
+            x = block(x, c)
+        shift, scale = self.final_modulation(c).chunk(2, dim=-1)
+        x = modulate_vector(self.final_norm(x), shift, scale)
+        x = self.final_linear(x)
+        if self.learn_sigma:
+            x, _ = x.chunk(2, dim=-1)
+        return x
+
+    def forward_with_cfg(self, x, t, y, cfg_scale):
+        half = x[: len(x) // 2]
+        combined = torch.cat([half, half], dim=0)
+        model_out = self.forward(combined, t, y)
+        cond_out, uncond_out = torch.split(model_out, len(model_out) // 2, dim=0)
+        half_out = uncond_out + cfg_scale * (cond_out - uncond_out)
+        return torch.cat([half_out, half_out], dim=0)
 
 class SiT(nn.Module):
     """
@@ -287,11 +405,16 @@ class SiT(nn.Module):
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.
         # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        eps = torch.cat([half_eps, half_eps], dim=0)
-        return torch.cat([eps, rest], dim=1)
+        if self.use_patch_embed and self.in_channels >= 3:
+            eps, rest = model_out[:, :3], model_out[:, 3:]
+            cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+            half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+            eps = torch.cat([half_eps, half_eps], dim=0)
+            return torch.cat([eps, rest], dim=1)
+
+        cond_out, uncond_out = torch.split(model_out, len(model_out) // 2, dim=0)
+        half_out = uncond_out + cfg_scale * (cond_out - uncond_out)
+        return torch.cat([half_out, half_out], dim=0)
 
 
 #################################################################################
@@ -400,11 +523,43 @@ def mini_SiT(**kwargs):
         **kwargs
     )
 
+def tiny_SiT(**kwargs):
+    return SiT(
+        depth=4,
+        hidden_size=64,
+        patch_size=1,
+        num_heads=4,
+        use_pos_embed=False,
+        use_patch_embed=False,
+        **kwargs
+    )
+
+
+def mini_MLP(**kwargs):
+    return VectorMLP(
+        hidden_size=128,
+        depth=6,
+        mlp_ratio=4.0,
+        **kwargs
+    )
+
+
+def tiny_MLP(**kwargs):
+    return VectorMLP(
+        hidden_size=96,
+        depth=4,
+        mlp_ratio=4.0,
+        **kwargs
+    )
+
 
 SiT_models = {
     'SiT-XL/2': SiT_XL_2,  'SiT-XL/4': SiT_XL_4,  'SiT-XL/8': SiT_XL_8,
     'SiT-L/2':  SiT_L_2,   'SiT-L/4':  SiT_L_4,   'SiT-L/8':  SiT_L_8,
     'SiT-B/2':  SiT_B_2,   'SiT-B/4':  SiT_B_4,   'SiT-B/8':  SiT_B_8,
     'SiT-S/2':  SiT_S_2,   'SiT-S/4':  SiT_S_4,   'SiT-S/8':  SiT_S_8,
-    'mini-SiT': mini_SiT
+    'mini-SiT': mini_SiT,
+    'tiny-SiT': tiny_SiT,
+    'mini-MLP': mini_MLP,
+    'tiny-MLP': tiny_MLP,
 }

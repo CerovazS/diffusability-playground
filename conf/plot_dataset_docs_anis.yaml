@@ -5,7 +5,7 @@ defaults:
 ambient_dim: 2
 
 plot:
-  # 1 cloud/class (points_per_cloud=128) to make anisotropy visible without orientation averaging
+  # Collect 128 samples/class to visualize anisotropy in the point-wise setting.
   max_points_per_class: 128
   projection: dims
   dim0: 0

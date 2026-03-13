@@ -2,6 +2,8 @@
 
 Questo documento descrive il modello matematico attualmente implementato per la generazione dei dati sintetici in `datamodules/synthetic_pointclouds.py` e per la valutazione metrica in `utils/pointcloud_metrics.py`.
 
+Nota: il documento sotto descrive soprattutto la formulazione legacy point-cloud. Il setting di training predefinito nel repository e' ora point-wise: ogni sample e' un vettore `x in R^D`, mentre le metriche principali usate di default sono SWD e RBF-MMD su sample raw.
+
 ## 1. Obiettivo e notazione
 
 Ogni sample del dataset e' una coppia:

@@ -1,19 +1,19 @@
-# Synthetic PointCloud Dataset: Attributi, Sweep e Visualizzazione
+# Synthetic Geometric Dataset: Attributi, Sweep e Visualizzazione
 
 Questa pagina documenta il dataset sintetico usato per lo studio della diffusability in `datamodules/synthetic_pointclouds.py` e come configurarlo via Hydra.
 
 ## 1) Idea del dataset
 
-Ogni sample e' una point cloud `x in R^{N x D}` con label di classe `y`.
+Ogni sample e' un singolo vettore `x in R^D` con label di classe `y`.
 
-- `N` = `points_per_cloud`
 - `D` = dimensione ambientale
 - la classe `y` seleziona i parametri geometrici (`ClassParams`)
 - ogni classe puo' essere generata da una famiglia diversa (`affine_subspace`, `sine_warp_subspace`, `mog`)
+- la geometria globale della classe viene fissata una volta per classe; tra sample cambiano variabili latenti, componente di mixture e rumore
 
 ### Famiglie supportate
 
-- `affine_subspace`: point cloud su sottospazio affine con rumore di spessore.
+- `affine_subspace`: campioni su sottospazio affine con rumore di spessore.
 - `sine_warp_subspace`: come affine, ma con warp sinusoidale nelle coordinate intrinseche.
 - `mog`: mixture of Gaussians in spazio ambientale.
 
@@ -24,8 +24,9 @@ I parametri stanno in `conf/data/synth_pc*.yaml`, nella sezione `cfg`.
 ### 2.1 Parametri dataset-level (`DatasetConfig`)
 
 - `num_samples`: numero totale di sample se `samples_per_class=null`.
-- `points_per_cloud`: punti per cloud (`N`).
-- `base_seed`: seed deterministico base.
+- `points_per_cloud`: campo legacy, mantenuto solo per compatibilita'; il dataset restituisce comunque singoli vettori.
+- `base_seed`: seed deterministico base per il campionamento dei sample.
+- `geometry_seed`: seed separato per fissare la geometria globale di ciascuna classe.
 - `device`: tipicamente `cpu` per generazione dataset.
 - `samples_per_class`: se impostato, forza dataset bilanciato per classe.
 - `classes`: mappa esplicita `class_id -> ClassParams`.
@@ -128,7 +129,7 @@ Perche' funziona: `_expand_class_sweeps` tratta valore scalare come lista con un
 Pipeline:
 
 1. istanzia dataset da config Hydra;
-2. raccoglie punti per classe (`max_points_per_class`);
+2. raccoglie sample per classe (`max_points_per_class`);
 3. proietta in 2D (`projection = pca | dims`);
 4. plot KDE per classe;
 5. salva immagine (crea automaticamente le directory parent).
@@ -182,7 +183,7 @@ Config usate:
 
 ![Sweep MoG cov](assets/pointcloud_dataset/sweep_overview_sweep_mog_cov.png)
 
-### Sweep su anisotropy (single-cloud view)
+### Sweep su anisotropy (single-class view)
 
 ![Sweep anisotropy](assets/pointcloud_dataset/sweep_anis_single_cloud_sweep_affine_anis.png)
 
