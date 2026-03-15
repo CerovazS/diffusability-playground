@@ -527,6 +527,11 @@ def _default_sample_metrics_cfg() -> Dict[str, Any]:
             "num_projections": 256,
             "seed": 0,
         },
+        "exact_w2": {
+            "enabled": True,
+            "max_samples": 1024,
+            "seed": 0,
+        },
         "energy_distance": {
             "enabled": True,
             "distance": "l2",
@@ -775,6 +780,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             Dict of metric_name -> metric_value
         """
         from utils.pointcloud_metrics import (
+            exact_discrete_w2_distance,
             energy_distance_u_statistic_samples,
             mmd_rbf_samples,
             sliced_wasserstein_distance,
@@ -785,6 +791,7 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
         class_ids = sorted(set(real_samples.keys()) & set(generated_samples.keys()))
         n_classes = len(class_ids)
         swd_cfg = self.metrics_cfg.get("swd", {})
+        exact_w2_cfg = self.metrics_cfg.get("exact_w2", {})
         energy_cfg = self.metrics_cfg.get("energy_distance", {})
         feature_mmd_cfg = self.metrics_cfg.get("feature_mmd", {})
         
@@ -794,7 +801,8 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
             real = real_samples[class_id]
             gen = generated_samples[class_id]
 
-            if bool(swd_cfg.get("enabled", True)):
+            compute_swd = bool(swd_cfg.get("enabled", True)) or split == "val"
+            if compute_swd:
                 info(f"  → SWD ({real.shape[0]} vs {gen.shape[0]} samples)...")
                 swd = sliced_wasserstein_distance(
                     real,
@@ -804,6 +812,17 @@ class SyntheticPointCloudDataModule(LightningDataModule, BaseMetricsDataModule):
                 )
                 metrics[f"{split}/swd/class_{class_id}"] = float(swd)
                 info(f"  ✓ SWD={swd:.6f}")
+
+            if bool(exact_w2_cfg.get("enabled", True)):
+                info(f"  → Exact-W2 ({real.shape[0]} vs {gen.shape[0]} samples)...")
+                exact_w2 = exact_discrete_w2_distance(
+                    real,
+                    gen,
+                    max_samples=exact_w2_cfg.get("max_samples", 1024),
+                    seed=int(exact_w2_cfg.get("seed", 0)) + int(class_id),
+                )
+                metrics[f"{split}/exact_w2/class_{class_id}"] = float(exact_w2)
+                info(f"  ✓ Exact-W2={exact_w2:.6f}")
 
             if bool(energy_cfg.get("enabled", True)):
                 info(f"  → Energy-U ({real.shape[0]} vs {gen.shape[0]} samples)...")

@@ -22,13 +22,18 @@ val_seed: 2345
 test_seed: 3456
 
 train_samples_per_class: 10000
-val_samples_per_class: 2000
+val_samples_per_class: 10000
 test_samples_per_class: 2000
 
 metrics:
   swd:
     enabled: true
     num_projections: 512
+    seed: 0
+
+  exact_w2:
+    enabled: true
+    max_samples: 1024
     seed: 0
 
   energy_distance:

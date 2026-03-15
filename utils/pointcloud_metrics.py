@@ -334,6 +334,33 @@ def sliced_wasserstein_distance(
     )
 
 
+def exact_discrete_w2_distance(
+    real_samples: np.ndarray,
+    gen_samples: np.ndarray,
+    *,
+    max_samples: Optional[int] = 1024,
+    seed: int = 0,
+) -> float:
+    """Exact empirical W2 distance between two equally weighted sample sets."""
+    real_samples = _subsample_samples(real_samples, max_samples=max_samples, seed=seed)
+    gen_samples = _subsample_samples(gen_samples, max_samples=max_samples, seed=seed + 1)
+    real_samples = _validate_samples(real_samples, "real_samples")
+    gen_samples = _validate_samples(gen_samples, "gen_samples")
+
+    if real_samples.shape[1] != gen_samples.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch: real D={real_samples.shape[1]} vs gen D={gen_samples.shape[1]}"
+        )
+
+    n = real_samples.shape[0]
+    m = gen_samples.shape[0]
+    a = np.full(n, 1.0 / float(n), dtype=np.float64)
+    b = np.full(m, 1.0 / float(m), dtype=np.float64)
+    cost = _pairwise_sqeuclidean(_as_f64_contig(real_samples), _as_f64_contig(gen_samples))
+    w2_sq = float(ot.emd2(a, b, cost))
+    return float(np.sqrt(max(w2_sq, 0.0)))
+
+
 __all__ = [
     "sliced_wasserstein_distance",
     "pairwise_sample_distance_matrix",
@@ -341,4 +368,5 @@ __all__ = [
     "energy_distance_u_statistic_samples",
     "mmd_rbf_from_features",
     "mmd_rbf_samples",
+    "exact_discrete_w2_distance",
 ]

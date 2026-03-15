@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import re
@@ -8,13 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from omegaconf import DictConfig
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 MMD_RE = re.compile(r"step=(\d+).+?val/feature_mmd_mean:\s*([0-9eE+\-.]+)")
+SWD_RE = re.compile(r"step=(\d+).+?val/swd_mean:\s*([0-9eE+\-.]+)")
 
 
 @dataclass
@@ -26,43 +28,12 @@ class SweepRun:
     created_at_utc: str
     val_series: list[dict[str, Any]]
     mmd_by_step: dict[int, float]
+    swd_by_step: dict[int, float]
     final_val_loss: float
     final_feature_mmd: float
+    final_swd: float
     wandb_run_dir: Path | None
     is_partial_run: bool = False
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Plot validation loss and Feature-MMD for the anisotropy/intrinsic-dimension DiT sweep."
-        )
-    )
-    parser.add_argument(
-        "--results-root",
-        type=Path,
-        default=Path("results/anisotropy_intrinsic_sweep"),
-        help="Root directory containing per-run results folders.",
-    )
-    parser.add_argument(
-        "--wandb-root",
-        type=Path,
-        default=Path("wandb"),
-        help="Root directory containing local W&B runs.",
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=None,
-        help="Output directory for plots and summary CSV. Defaults to <results-root>/plots.",
-    )
-    parser.add_argument(
-        "--dpi",
-        type=int,
-        default=180,
-        help="Figure DPI.",
-    )
-    return parser.parse_args()
 
 
 def load_json(path: Path) -> Any:
@@ -91,6 +62,14 @@ def parse_mmd_series(output_log: Path) -> dict[int, float]:
     for step_text, value_text in MMD_RE.findall(text):
         mmd_by_step[int(step_text)] = float(value_text)
     return mmd_by_step
+
+
+def parse_swd_series(output_log: Path) -> dict[int, float]:
+    text = strip_ansi(output_log.read_text(encoding="utf-8", errors="ignore"))
+    swd_by_step: dict[int, float] = {}
+    for step_text, value_text in SWD_RE.findall(text):
+        swd_by_step[int(step_text)] = float(value_text)
+    return swd_by_step
 
 
 def load_wandb_config(config_path: Path) -> dict[str, Any]:
@@ -200,17 +179,22 @@ def load_sweep_runs(results_root: Path, wandb_root: Path) -> list[SweepRun]:
         )
 
         mmd_by_step: dict[int, float] = {}
+        swd_by_step: dict[int, float] = {}
         summary: dict[str, Any] = {}
         wandb_run_dir: Path | None = None
         if wandb_run is not None:
             wandb_run_dir = Path(wandb_run["run_dir"])
             mmd_by_step = parse_mmd_series(Path(wandb_run["output_log"]))
+            swd_by_step = parse_swd_series(Path(wandb_run["output_log"]))
             summary = load_summary(Path(wandb_run["summary_path"]))
 
         last_val = float(val_series[-1]["overall_val_loss"])
         final_mmd = float(summary.get("val/feature_mmd_mean", np.nan))
+        final_swd = float(summary.get("val/swd_mean", np.nan))
         if math.isnan(final_mmd) and mmd_by_step:
             final_mmd = float(mmd_by_step[max(mmd_by_step)])
+        if math.isnan(final_swd) and swd_by_step:
+            final_swd = float(swd_by_step[max(swd_by_step)])
 
         runs.append(
             SweepRun(
@@ -221,8 +205,10 @@ def load_sweep_runs(results_root: Path, wandb_root: Path) -> list[SweepRun]:
                 created_at_utc=str(class_registry.get("created_at_utc", "")),
                 val_series=val_series,
                 mmd_by_step=mmd_by_step,
+                swd_by_step=swd_by_step,
                 final_val_loss=last_val,
                 final_feature_mmd=final_mmd,
+                final_swd=final_swd,
                 wandb_run_dir=wandb_run_dir,
             )
         )
@@ -262,6 +248,7 @@ def build_summary_rows(runs: list[SweepRun]) -> list[dict[str, Any]]:
     for run in runs:
         best_loss_record = min(run.val_series, key=lambda row: float(row["overall_val_loss"]))
         best_mmd = min(run.mmd_by_step.values()) if run.mmd_by_step else np.nan
+        best_swd = min(run.swd_by_step.values()) if run.swd_by_step else np.nan
         rows.append(
             {
                 "experiment_name": run.experiment_name,
@@ -272,9 +259,11 @@ def build_summary_rows(runs: list[SweepRun]) -> list[dict[str, Any]]:
                 "final_step": int(run.val_series[-1]["step"]),
                 "final_val_loss": run.final_val_loss,
                 "final_feature_mmd": run.final_feature_mmd,
+                "final_swd": run.final_swd,
                 "best_val_loss": float(best_loss_record["overall_val_loss"]),
                 "best_val_loss_epoch": int(best_loss_record["epoch"]),
                 "best_feature_mmd": float(best_mmd) if not math.isnan(best_mmd) else np.nan,
+                "best_swd": float(best_swd) if not math.isnan(best_swd) else np.nan,
                 "is_partial_run": run.is_partial_run,
                 "has_wandb_match": run.wandb_run_dir is not None,
                 "wandb_run_dir": str(run.wandb_run_dir) if run.wandb_run_dir else "",
@@ -387,12 +376,43 @@ def plot_loss_vs_mmd_scatter(runs: list[SweepRun], out_path: Path, dpi: int) -> 
     plt.close(fig)
 
 
+def plot_loss_vs_swd_scatter(runs: list[SweepRun], out_path: Path, dpi: int) -> None:
+    intrinsic_values = sorted({run.intrinsic_dim for run in runs})
+    colors = plt.get_cmap("tab10")(np.linspace(0.0, 1.0, max(len(intrinsic_values), 1)))
+    color_map = {d: colors[idx] for idx, d in enumerate(intrinsic_values)}
+
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    for run in sorted(runs, key=lambda item: (item.intrinsic_dim, item.anisotropy_max_scale)):
+        label = f"d={run.intrinsic_dim}, a={run.anisotropy_max_scale:g}"
+        ax.scatter(
+            run.final_val_loss,
+            run.final_swd,
+            s=40 + 15 * math.log2(max(run.anisotropy_max_scale, 1.0)),
+            color=color_map[run.intrinsic_dim],
+            alpha=0.9,
+        )
+        ax.annotate(label, (run.final_val_loss, run.final_swd), xytext=(5, 5), textcoords="offset points", fontsize=8)
+
+    handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="", color=color_map[d], label=f"d={d}", markersize=8)
+        for d in intrinsic_values
+    ]
+    ax.legend(handles=handles, title="Intrinsic dim", loc="best")
+    ax.set_xlabel("Final validation loss")
+    ax.set_ylabel("Final val/swd_mean")
+    ax.set_title("Validation loss vs SWD")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
+
+
 def plot_trajectories(runs: list[SweepRun], out_path: Path, dpi: int) -> None:
     intrinsic_values = sorted({run.intrinsic_dim for run in runs})
     fig, axes = plt.subplots(
         nrows=len(intrinsic_values),
-        ncols=2,
-        figsize=(12, max(3.6 * len(intrinsic_values), 4.2)),
+        ncols=3,
+        figsize=(16, max(3.6 * len(intrinsic_values), 4.2)),
         squeeze=False,
         sharex=False,
     )
@@ -408,16 +428,19 @@ def plot_trajectories(runs: list[SweepRun], out_path: Path, dpi: int) -> None:
         )
         loss_ax = axes[row_idx][0]
         mmd_ax = axes[row_idx][1]
+        swd_ax = axes[row_idx][2]
 
         for run in subset:
             epochs = [int(record["epoch"]) for record in run.val_series]
             losses = [float(record["overall_val_loss"]) for record in run.val_series]
             mmds = [run.mmd_by_step.get(int(record["step"]), np.nan) for record in run.val_series]
+            swds = [run.swd_by_step.get(int(record["step"]), np.nan) for record in run.val_series]
             label = f"a={run.anisotropy_max_scale:g}"
             color = color_map[run.anisotropy_max_scale]
 
             loss_ax.plot(epochs, losses, marker="o", ms=3, lw=1.8, color=color, label=label)
             mmd_ax.plot(epochs, mmds, marker="o", ms=3, lw=1.8, color=color, label=label)
+            swd_ax.plot(epochs, swds, marker="o", ms=3, lw=1.8, color=color, label=label)
 
         loss_ax.set_title(f"d={intrinsic_dim} | val loss")
         loss_ax.set_ylabel("Validation loss")
@@ -425,10 +448,13 @@ def plot_trajectories(runs: list[SweepRun], out_path: Path, dpi: int) -> None:
 
         mmd_ax.set_title(f"d={intrinsic_dim} | Feature-MMD")
         mmd_ax.grid(alpha=0.25)
+        swd_ax.set_title(f"d={intrinsic_dim} | SWD")
+        swd_ax.grid(alpha=0.25)
 
         if row_idx == len(intrinsic_values) - 1:
             loss_ax.set_xlabel("Epoch")
             mmd_ax.set_xlabel("Epoch")
+            swd_ax.set_xlabel("Epoch")
 
         if subset:
             loss_ax.legend(loc="best", title="Anisotropy")
@@ -463,17 +489,21 @@ def print_console_summary(runs: list[SweepRun]) -> None:
             "  - "
             f"d={run.intrinsic_dim}, a={run.anisotropy_max_scale:g}: "
             f"val_loss={run.final_val_loss:.4f}, "
-            f"val/feature_mmd_mean={run.final_feature_mmd:.4f} "
+            f"val/feature_mmd_mean={run.final_feature_mmd:.4f}, "
+            f"val/swd_mean={run.final_swd:.4f} "
             f"[{status}]"
         )
 
 
-def main() -> None:
-    args = parse_args()
-    out_dir = args.out_dir or (args.results_root / "plots")
+@hydra.main(config_path="../conf/tools", config_name="plot_anisotropy_intrinsic_sweep", version_base=None)
+def main(cfg: DictConfig) -> None:
+    results_root = Path(hydra.utils.to_absolute_path(str(cfg.results_root)))
+    wandb_root = Path(hydra.utils.to_absolute_path(str(cfg.wandb_root)))
+    out_dir = None if cfg.out_dir is None else Path(hydra.utils.to_absolute_path(str(cfg.out_dir)))
+    out_dir = out_dir or (results_root / "plots")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    runs = load_sweep_runs(args.results_root, args.wandb_root)
+    runs = load_sweep_runs(results_root, wandb_root)
     if not runs:
         raise SystemExit("No sweep runs found.")
 
@@ -490,7 +520,7 @@ def main() -> None:
         title="Final validation loss",
         colorbar_label="val_loss",
         out_path=out_dir / "final_val_loss_heatmap.png",
-        dpi=args.dpi,
+        dpi=int(cfg.dpi),
     )
     plot_heatmap(
         runs=runs,
@@ -498,17 +528,30 @@ def main() -> None:
         title="Final validation Feature-MMD",
         colorbar_label="val/feature_mmd_mean",
         out_path=out_dir / "final_feature_mmd_heatmap.png",
-        dpi=args.dpi,
+        dpi=int(cfg.dpi),
+    )
+    plot_heatmap(
+        runs=runs,
+        metric_name="final_swd",
+        title="Final validation SWD",
+        colorbar_label="val/swd_mean",
+        out_path=out_dir / "final_swd_heatmap.png",
+        dpi=int(cfg.dpi),
     )
     plot_loss_vs_mmd_scatter(
         runs=runs,
         out_path=out_dir / "val_loss_vs_feature_mmd_scatter.png",
-        dpi=args.dpi,
+        dpi=int(cfg.dpi),
+    )
+    plot_loss_vs_swd_scatter(
+        runs=runs,
+        out_path=out_dir / "val_loss_vs_swd_scatter.png",
+        dpi=int(cfg.dpi),
     )
     plot_trajectories(
         runs=runs,
         out_path=out_dir / "validation_trajectories.png",
-        dpi=args.dpi,
+        dpi=int(cfg.dpi),
     )
 
     print_console_summary(runs)

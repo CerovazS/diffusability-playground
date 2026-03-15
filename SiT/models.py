@@ -536,19 +536,19 @@ def tiny_SiT(**kwargs):
 
 
 def mini_MLP(**kwargs):
+    kwargs.setdefault("hidden_size", 128)
+    kwargs.setdefault("depth", 6)
+    kwargs.setdefault("mlp_ratio", 4.0)
     return VectorMLP(
-        hidden_size=128,
-        depth=6,
-        mlp_ratio=4.0,
         **kwargs
     )
 
 
 def tiny_MLP(**kwargs):
+    kwargs.setdefault("hidden_size", 96)
+    kwargs.setdefault("depth", 4)
+    kwargs.setdefault("mlp_ratio", 4.0)
     return VectorMLP(
-        hidden_size=96,
-        depth=4,
-        mlp_ratio=4.0,
         **kwargs
     )
 

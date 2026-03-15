@@ -22,7 +22,7 @@ cfg:
         d: ${intrinsic_dim}  # intrinsic dimension (must be <= D)
         D: ${ambient_dim}
         K: 1
-        thickness: 0.02
+        thickness: ${data_thickness}
         separation: 0.0
         tail:
           kind: gauss

@@ -1,0 +1,20 @@
+sample_sizes: [100, 500, 1000, 2000, 5000]
+seeds: [2026, 1337, 4242]
+dimension: 16
+
+num_projections: 256
+
+mmd_gamma_mode: median_cross
+mmd_gamma_scale: 1.0
+mmd_unbiased: true
+mmd_standardize_features: true
+mmd_eig_eps: 1.0e-8
+
+w2_stop_on_warning: true
+
+output_root: results/metric_stability_gaussian/metrics
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

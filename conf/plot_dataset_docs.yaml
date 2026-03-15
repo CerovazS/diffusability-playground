@@ -5,7 +5,7 @@ defaults:
 ambient_dim: 8
 
 plot:
-  max_points_per_class: 8000
+  max_points_per_class: 10000
   projection: pca
   dim0: 0
   dim1: 1

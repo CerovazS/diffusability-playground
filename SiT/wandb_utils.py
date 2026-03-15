@@ -1,12 +1,13 @@
-import wandb
-import torch
-from torchvision.utils import make_grid
-import torch.distributed as dist
 import os
 import argparse
 from collections.abc import Mapping
 import math
 from typing import Iterable
+
+import torch
+import torch.distributed as dist
+import wandb
+from torchvision.utils import make_grid
 
 _WANDB_FINISHED = True
 
@@ -27,7 +28,16 @@ def namespace_to_dict(namespace):
     return namespace
 
 
-def initialize(args, entity, exp_name, project_name):
+def initialize(
+    args,
+    entity,
+    exp_name,
+    project_name,
+    *,
+    group=None,
+    job_type=None,
+    tags=None,
+):
     global _WANDB_FINISHED
     config_dict = namespace_to_dict(args)
     # Login: try with env var first, fallback to interactive
@@ -41,6 +51,9 @@ def initialize(args, entity, exp_name, project_name):
         project=project_name,
         name=exp_name,
         config=config_dict,
+        group=group,
+        job_type=job_type,
+        tags=tags,
         reinit=True,
     )
 
@@ -71,6 +84,11 @@ def log_image(sample, step=None):
     if is_main_process():
         sample = array2grid(sample)
         wandb.log({f"samples": wandb.Image(sample), "train_step": step})
+
+
+def log_image_file(key, image_path, step=None):
+    if is_main_process():
+        wandb.log({key: wandb.Image(image_path), "train_step": step}, step=step)
 
 
 def log_artifact_files(

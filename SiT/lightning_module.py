@@ -59,10 +59,25 @@ class SiTLightningModule(LightningModule):
         if self.is_main_process():
             info(f"Model config: num_classes={cfg.model.num_classes}, in_channels={cfg.model.in_channels}")
 
+        optional_model_kwargs = {}
+        for key in (
+            "hidden_size",
+            "depth",
+            "mlp_ratio",
+            "num_heads",
+            "patch_size",
+            "class_dropout_prob",
+            "use_pos_embed",
+            "use_patch_embed",
+        ):
+            if key in cfg.model and cfg.model.get(key) is not None:
+                optional_model_kwargs[key] = cfg.model.get(key)
+
         self.model = SiT_models[cfg.model.name](
             input_size=latent_size,
             num_classes=cfg.model.num_classes,
             in_channels=cfg.model.in_channels,
+            **optional_model_kwargs,
         )
         self.ema = deepcopy(self.model)
         requires_grad(self.ema, False)
@@ -102,6 +117,7 @@ class SiTLightningModule(LightningModule):
         self.metrics_dir = os.path.join(self.experiment_dir, "metrics")
         self.class_registry_path = os.path.join(self.metrics_dir, "class_registry.json")
         self.val_loss_by_class_path = os.path.join(self.metrics_dir, "val_loss_by_class.jsonl")
+        self.test_loss_by_class_path = os.path.join(self.metrics_dir, "test_loss_by_class.json")
         self._class_registry_written = False
         self._class_registry_cache: dict[str, dict] = {}
         self._val_class_ids: list[int] = []
@@ -211,6 +227,7 @@ class SiTLightningModule(LightningModule):
             files=[
                 (self.class_registry_path, "metrics/class_registry.json"),
                 (self.val_loss_by_class_path, "metrics/val_loss_by_class.jsonl"),
+                (self.test_loss_by_class_path, "metrics/test_loss_by_class.json"),
             ],
             metadata=metadata,
             aliases=aliases or ["latest"],
@@ -321,6 +338,12 @@ class SiTLightningModule(LightningModule):
         run_metrics(self, split="val")
 
     def _log_validation_loss_by_class(self):
+        self._log_split_loss_by_class(split="val")
+
+    def _log_test_loss_by_class(self):
+        self._log_split_loss_by_class(split="test")
+
+    def _log_split_loss_by_class(self, *, split: str):
         if self._val_loss_sums is None or self._val_loss_counts is None:
             return
 
@@ -333,6 +356,26 @@ class SiTLightningModule(LightningModule):
         if not self.is_main_process():
             return
 
+        step_value = int(getattr(self, "_regen_step_override", self.global_step))
+        epoch_value = int(getattr(self, "_regen_epoch_override", self.current_epoch))
+
+        if split == "val":
+            split_path = self.val_loss_by_class_path
+            split_schema = "1.0"
+            loss_key = "overall_val_loss"
+            class_loss_field = "class_val_loss"
+            wandb_prefix = "val_loss"
+            output_mode = "jsonl"
+        elif split == "test":
+            split_path = self.test_loss_by_class_path
+            split_schema = "1.0"
+            loss_key = "overall_test_loss"
+            class_loss_field = "class_test_loss"
+            wandb_prefix = "test_loss"
+            output_mode = "json"
+        else:
+            raise ValueError(f"Unsupported split for class-wise logging: {split}")
+
         class_loss_values: dict[str, float] = {}
         class_count_values: dict[str, int] = {}
         wandb_stats: dict[str, float] = {}
@@ -344,44 +387,58 @@ class SiTLightningModule(LightningModule):
             if count <= 0:
                 continue
             class_loss = float(loss_sums[idx].item() / count)
-            class_key = str(class_id)
-            class_loss_values[class_key] = class_loss
-            class_count_values[class_key] = int(count)
+            class_id_key = str(class_id)
+            class_loss_values[class_id_key] = class_loss
+            class_count_values[class_id_key] = int(count)
             total_sum += float(loss_sums[idx].item())
             total_count += count
-            wandb_stats[f"val_loss/class_{class_id}"] = class_loss
+            wandb_stats[f"{wandb_prefix}/class_{class_id}"] = class_loss
 
-            class_meta = self._class_registry_cache.get(class_key, {})
+            class_meta = self._class_registry_cache.get(class_id_key, {})
             sweep_names = class_meta.get("sweeps", [])
             sweep_str = ",".join(sweep_names) if sweep_names else "none"
             info(
-                f"(step={self.global_step:07d}) val_loss/class_{class_id}: "
+                f"(step={step_value:07d}) {wandb_prefix}/class_{class_id}: "
                 f"{class_loss:.6f} (n={int(count)}, sweeps={sweep_str})"
             )
 
-        overall_val_loss = (total_sum / total_count) if total_count > 0 else float("nan")
-        info(f"(step={self.global_step:07d}) val_loss/overall_from_class: {overall_val_loss:.6f}")
-        wandb_stats["val_loss/overall_from_class"] = overall_val_loss
+        overall_split_loss = (total_sum / total_count) if total_count > 0 else float("nan")
+        info(f"(step={step_value:07d}) {wandb_prefix}/overall_from_class: {overall_split_loss:.6f}")
+        wandb_stats[f"{wandb_prefix}/overall_from_class"] = overall_split_loss
 
         if self.cfg.trainer.use_wandb and wandb_stats:
-            wandb_utils.log(wandb_stats, step=self.global_step)
+            wandb_utils.log(wandb_stats, step=step_value)
 
         record = {
-            "schema_version": "1.0",
+            "schema_version": split_schema,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "step": int(self.global_step),
-            "epoch": int(self.current_epoch),
-            "split": "val",
-            "overall_val_loss": overall_val_loss,
-            "class_val_loss": class_loss_values,
+            "step": step_value,
+            "epoch": epoch_value,
+            "split": split,
+            loss_key: overall_split_loss,
+            class_loss_field: class_loss_values,
             "class_counts": class_count_values,
         }
-        with open(self.val_loss_by_class_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-        info(f"Appended class-wise validation loss: {self.val_loss_by_class_path}")
+        if output_mode == "jsonl":
+            with open(split_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        else:
+            existing: list[dict] = []
+            if os.path.exists(split_path):
+                with open(split_path, "r", encoding="utf-8") as handle:
+                    raw = handle.read().strip()
+                if raw:
+                    existing = json.loads(raw)
+                    if not isinstance(existing, list):
+                        raise ValueError(f"{split_path} must contain a JSON list.")
+            existing.append(record)
+            with open(split_path, "w", encoding="utf-8") as handle:
+                json.dump(existing, handle, indent=2, sort_keys=True)
+
+        info(f"Appended class-wise {split} loss: {split_path}")
 
         if self.cfg.trainer.use_wandb:
-            self._log_metrics_artifact(aliases=["latest", "val"])
+            self._log_metrics_artifact(aliases=["latest", split])
 
     def test_step(self, batch, batch_idx):
         x, y = batch
@@ -389,11 +446,43 @@ class SiTLightningModule(LightningModule):
             with torch.no_grad():
                 x = self.vae.encode(x).latent_dist.sample().mul_(0.18215)
         loss_dict = self.transport.training_losses(self.model, x, dict(y=y))
-        loss = loss_dict["loss"].mean()
+        per_sample_loss = loss_dict["loss"]
+
+        if self._val_loss_sums is not None and self._val_loss_counts is not None:
+            idx_list = [self._val_class_id_to_idx.get(int(class_id), -1) for class_id in y.detach().cpu().tolist()]
+            valid_pos = [i for i, idx in enumerate(idx_list) if idx >= 0]
+            if valid_pos:
+                idx_tensor = torch.tensor([idx_list[i] for i in valid_pos], device=self.device, dtype=torch.long)
+                loss_tensor = per_sample_loss[valid_pos].detach().to(torch.float64)
+                count_tensor = torch.ones_like(loss_tensor, dtype=torch.float64)
+                self._val_loss_sums.scatter_add_(0, idx_tensor, loss_tensor)
+                self._val_loss_counts.scatter_add_(0, idx_tensor, count_tensor)
+
+        loss = per_sample_loss.mean()
         self.log("test_loss", loss, prog_bar=True, sync_dist=True)
         return loss
 
+    def on_test_epoch_start(self):
+        self._ensure_metrics_storage()
+        if not self._val_class_ids:
+            class_ids = None
+            datamodule = self.trainer.datamodule
+            if datamodule is not None and getattr(datamodule, "is_metrics_capable", False):
+                try:
+                    class_ids = [int(class_id) for class_id in datamodule.get_eval_config().class_ids]
+                except (AttributeError, RuntimeError, ValueError):
+                    class_ids = None
+            if class_ids is None:
+                class_ids = list(range(int(self.cfg.model.num_classes)))
+            self._val_class_ids = class_ids
+
+        self._write_class_registry_file()
+        self._val_class_id_to_idx = {class_id: idx for idx, class_id in enumerate(self._val_class_ids)}
+        self._val_loss_sums = torch.zeros(len(self._val_class_ids), device=self.device, dtype=torch.float64)
+        self._val_loss_counts = torch.zeros(len(self._val_class_ids), device=self.device, dtype=torch.float64)
+
     def on_test_epoch_end(self):
+        self._log_test_loss_by_class()
         run_metrics(self, split="test")
 
     def on_save_checkpoint(self, checkpoint):

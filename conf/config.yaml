@@ -12,6 +12,7 @@ defaults:
 ambient_dim: 16
 anisotropy_max_scale: 1.0
 intrinsic_dim: 6
+data_thickness: 0.02
 
 ckpt: null
 

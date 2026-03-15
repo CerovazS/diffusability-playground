@@ -77,6 +77,11 @@ def _resolve_model_num_classes(cfg: DictConfig, datamodule) -> int:
     return int(resolved)
 
 
+def _default_experiment_label(cfg: DictConfig) -> str:
+    ambient_dim = int(getattr(cfg, "ambient_dim", getattr(cfg.model, "in_channels", -1)))
+    return f"ambient{ambient_dim}-anisotropy"
+
+
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
@@ -93,12 +98,10 @@ def main(cfg: DictConfig):
     results_dir = hydra.utils.to_absolute_path(cfg.trainer.results_dir)
     os.makedirs(results_dir, exist_ok=True)
 
-    model_string_name = cfg.model.name.replace("/", "-")
     experiment_index = len(glob(f"{results_dir}/*"))
-    experiment_name = (
-        f"{experiment_index:03d}-{model_string_name}-"
-        f"{cfg.model.transport.path_type}-{cfg.model.transport.prediction}-{cfg.model.transport.loss_weight}"
-    )
+    experiment_label = str(getattr(cfg.trainer, "run_name", "") or "").strip() or _default_experiment_label(cfg)
+    experiment_name = f"{experiment_index:03d}-{experiment_label}"
+    wandb_run_name = str(getattr(cfg.trainer, "wandb_run_name", "") or "").strip() or experiment_label
     experiment_dir = os.path.join(results_dir, experiment_name)
     checkpoint_dir = os.path.join(experiment_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -130,7 +133,18 @@ def main(cfg: DictConfig):
     if wandb_enabled:
         entity = cfg.trainer.wandb_entity
         project = cfg.trainer.wandb_project
-        wandb_utils.initialize(OmegaConf.to_container(cfg, resolve=True), entity, experiment_name, project)
+        wandb_group = getattr(cfg.trainer, "wandb_group", None)
+        wandb_job_type = getattr(cfg.trainer, "wandb_job_type", None)
+        wandb_tags = getattr(cfg.trainer, "wandb_tags", None)
+        wandb_utils.initialize(
+            OmegaConf.to_container(cfg, resolve=True),
+            entity,
+            wandb_run_name,
+            project,
+            group=wandb_group,
+            job_type=wandb_job_type,
+            tags=list(wandb_tags) if wandb_tags is not None else None,
+        )
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal_handlers_backup[sig] = signal.getsignal(sig)
             signal.signal(sig, _on_termination)

@@ -28,7 +28,10 @@ SiT/eval_runner.py               # evaluation sampling + metric orchestration
 
 datamodules/synthetic_pointclouds.py  # synthetic vector dataset + datamodule
 utils/plot_distribution.py            # synthetic dataset visualization
+utils/validation_distribution_plots.py  # validation-time GT vs generated comparison plots
 utils/plot_anisotropy_intrinsic_sweep.py  # aggregate sweep plots from saved runs
+utils/evaluate_checkpoint_metrics.py  # evaluate checkpoints every N epochs and write test_loss_by_class.json
+program.md                            # active execution tracker for the current task
 
 docs/synthetic_pointcloud_dataset.md
 docs/synthetic_pointcloud_math_foundations.md
@@ -53,6 +56,7 @@ Those shared parameters are propagated via Hydra interpolations:
 - `ambient_dim -> class_sweeps[*].base.D`
 - `intrinsic_dim -> class_sweeps[*].base.d`
 - `anisotropy_max_scale -> class_sweeps[*].sweep.anisotropy.max_scale`
+- `data_thickness -> class_sweeps[*].base.thickness`
 
 `conf/data/synth_pc.yaml` uses `class_sweeps` with a single base class and a sweepable anisotropy value. In practice, Hydra multirun produces one training job per anisotropy setting.
 
@@ -70,6 +74,7 @@ Supported geometric families:
 
 The default datamodule computes:
 - SWD
+- Exact-W2
 - Energy-U
 - Feature-MMD
 
@@ -78,6 +83,14 @@ These metrics are computed directly on vector samples `[N, D]`; the legacy cloud
 Per-run artifacts are written under `results/<experiment>/metrics/`:
 - `class_registry.json`
 - `val_loss_by_class.jsonl`
+- `test_loss_by_class.json`
+
+Validation-time distribution plots are written under `results/<experiment>/plots/val/`:
+- `distribution_comparison_epochXXX_stepXXXXXXX.png`
+- `manifest.jsonl`
+
+Each validation pass logs the same `ground truth vs generated` comparison figure to W&B.
+These figures use the same seaborn-style visual language already used by the repo plotting utilities, with a shared blue density palette and a shared density scale between the left and right panels for each class.
 
 ## Training Commands
 
@@ -123,6 +136,18 @@ Notes:
 - `trainer.strategy=auto` is the safest override for single-GPU runs.
 - `model.num_classes` is resolved automatically at runtime from the instantiated datamodule.
 - W&B is enabled by default through `conf/trainer/sit_trainer.yaml`.
+- `trainer.run_name` controls the human-readable run label used for local experiment naming.
+- `trainer.wandb_run_name` can override the W&B display name when needed.
+
+Evaluate checkpoints every 5 epochs (defaults: W2 at 2048 samples/class, SWD/MMD/L2 at 10000):
+
+```bash
+uv run python utils/evaluate_checkpoint_metrics.py
+# Example override:
+uv run python utils/evaluate_checkpoint_metrics.py \
+  roots='[results/gaussian_anisotropy_sweep]' \
+  epoch_stride=10
+```
 
 ## Plotting
 
@@ -143,13 +168,14 @@ Aggregate anisotropy sweep results:
 
 ```bash
 uv run python utils/plot_anisotropy_intrinsic_sweep.py \
-  --results-root results/anisotropy_sweep_ambient8_d6
+  results_root=results/anisotropy_sweep_ambient8_d6
 
 uv run python utils/plot_anisotropy_intrinsic_sweep.py \
-  --results-root results/anisotropy_sweep_ambient16_d6
+  results_root=results/anisotropy_sweep_ambient16_d6
 ```
 
 The sweep plotting utility reads local training artifacts from `results/...` and matches them with local W&B logs under `wandb/`.
+It now summarizes and plots both `val/feature_mmd_mean` and `val/swd_mean` when available.
 
 ## Sampling Configuration
 

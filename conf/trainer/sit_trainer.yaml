@@ -1,4 +1,9 @@
 results_dir: results
+run_name: null
+wandb_run_name: null
+wandb_group: null
+wandb_job_type: null
+wandb_tags: []
 epochs: 200
 global_batch_size: 256
 global_seed: 0
@@ -14,13 +19,31 @@ wandb_project: diffusion-playground
 # Validation
 val_check_interval: null  # validate every N training steps (null = every epoch)
 check_val_every_n_epoch: 1  # run validation every epoch (needed for epoch-level early stopping)
+val_generative_metrics_every_n_epoch: 5  # heavy generative metrics cadence during validation
 num_sanity_val_steps: 0   # skip sanity check (validation is slow due to sampling)
 val_metrics_seed: 0        # fixed seed for validation sampling used by metrics (null = stochastic)
+distribution_plots:
+  enabled: true
+  splits: [val]
+  every_n_epochs: 20
+  max_classes: 6
+  max_points_per_class: 10000
+  projection: pca
+  dim0: 0
+  dim1: 1
+  kde_levels: 70
+  kde_thresh: 0.02
+  min_points_for_kde: 32
+  density_cmap: Blues
+  scatter_alpha: 0.35
+  dpi: 200
+  seed: 0
+  grid_size: 160
 
 # Best-checkpoint selection for post-training test
 best_checkpoint:
   enabled: true
-  monitor: val/feature_mmd_mean
+  monitor: val_loss
   mode: min
   save_top_k: 1
   filename: best-{epoch:03d}-{step:07d}
@@ -35,7 +58,7 @@ test_after_fit:
 
 early_stopping:
   enabled: false
-  monitor: val/feature_mmd_mean
+  monitor: val_loss
   mode: min
   patience: 5
   min_delta: 0.0

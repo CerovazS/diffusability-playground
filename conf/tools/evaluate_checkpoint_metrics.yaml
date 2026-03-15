@@ -1,0 +1,16 @@
+roots:
+  - results/gaussian_anisotropy_sweep_ambient16
+  - results/gaussian_anisotropy_sweep
+  - results/gaussian_intrinsic_dim_sweep
+
+epoch_stride: 5
+w2_samples_per_class: 2048
+other_samples_per_class: 10000
+num_projections: 512
+seed: 2026
+reset_test_loss: true
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

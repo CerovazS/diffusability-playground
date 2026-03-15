@@ -1,0 +1,9 @@
+results_root: results/anisotropy_intrinsic_sweep
+wandb_root: wandb
+out_dir: null
+dpi: 180
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
