@@ -1,106 +1,95 @@
 # Diffusability Playground
 
-Study diffusability of latent spaces starting from synthetic datasets with controllable geometry, then move toward real audio and vision datasets.
+Diffusability Playground is a research codebase for studying when a latent space is easy or hard for diffusion and flow-matching models to learn.
 
-This repo is Hydra-driven and uses Astral `uv` for environment and dependency management. Use `uv add` for dependencies. For config-driven construction, use `hydra.utils.instantiate`; do not wire instantiation manually with OmegaConf.
+The central idea is to separate the geometry of the data distribution from the decoder, dataset, and representation-learning confounders that usually appear in latent diffusion experiments. The repository starts from synthetic vector distributions with controlled intrinsic dimension, ambient dimension, anisotropy, curvature, multimodality, tail behavior, and manifold thickness. These controlled settings make it possible to ask sharper questions about latent-space diffusability before moving the same evaluation protocol to real vision and audio latents.
+
+## Scientific Goal
+
+Latent diffusion performance is often discussed in terms of semantic alignment, compression quality, or reconstruction fidelity, but these explanations do not fully isolate the geometry of the latent distribution itself. This project treats diffusability as an empirical property of a distribution: how efficiently a generative dynamics model can match it under fixed modeling, sampling, and compute budgets.
+
+The current experiments are designed to test questions such as:
+
+- Does increasing anisotropy make a distribution systematically harder to model?
+- How do intrinsic dimension and ambient dimension interact with diffusion/flow-matching quality?
+- Which distributional metrics are stable enough to compare synthetic latent geometries?
+- Can synthetic geometric probes predict failure modes that later appear in real autoencoder latents?
+
+The long-term aim is to build a measurable bridge between latent-space geometry and generative-model trainability.
+
+## What Is Included
+
+- Synthetic vector datasets with class-conditional geometric controls.
+- SiT-style flow/diffusion training on vector data and image-folder data.
+- Per-class evaluation with sliced Wasserstein distance, exact Wasserstein-2, energy distance, and feature-space MMD.
+- Validation and test artifacts written locally for reproducible comparison across runs.
+- Plotting utilities for visualizing distributions, validation samples, metric stability, and anisotropy sweeps.
+
+The conceptual project note is available in [`docs/flywheel/on_the_diffusability_of_latent_spaces.md`](docs/flywheel/on_the_diffusability_of_latent_spaces.md).
+
+## Repository Layout
+
+```text
+conf/                         Experiment and tool configurations
+SiT/train.py                  Main training entrypoint
+SiT/lightning_module.py       Lightning module for training, validation, and test
+SiT/eval_runner.py            Sampling and metric orchestration
+datamodules/synthetic_pointclouds.py
+                              Controlled synthetic vector distributions
+datamodules/image_datamodule.py
+                              Image-folder datamodule for later real-data experiments
+utils/pointcloud_metrics.py   Distributional metrics for vector samples
+utils/plot_distribution.py    Synthetic distribution visualization
+utils/plot_anisotropy_intrinsic_sweep.py
+                              Sweep aggregation and plotting
+utils/evaluate_checkpoint_metrics.py
+                              Checkpoint-by-checkpoint metric evaluation
+```
 
 ## Setup
+
+The project uses Python 3.13 and GPU-enabled PyTorch. Install the environment with:
 
 ```bash
 uv sync
 ```
 
-Main references:
-- `https://docs.astral.sh/uv/`
-- `https://hydra.cc/docs/intro/`
+Training currently expects a CUDA-capable GPU. For a single-GPU local run, override the distributed strategy with `trainer.strategy=auto`.
 
-## Repo Layout
+## Quick Start
 
-```text
-conf/config.yaml                 # main experiment entrypoint
-conf/data/*.yaml                 # dataset / datamodule configs
-conf/model/*.yaml                # model configs
-conf/trainer/*.yaml              # trainer configs
-
-SiT/train.py                     # Hydra entrypoint + Lightning Trainer wiring
-SiT/lightning_module.py          # training / validation / test module
-SiT/eval_runner.py               # evaluation sampling + metric orchestration
-
-datamodules/synthetic_pointclouds.py  # synthetic vector dataset + datamodule
-utils/plot_distribution.py            # synthetic dataset visualization
-utils/validation_distribution_plots.py  # validation-time GT vs generated comparison plots
-utils/plot_anisotropy_intrinsic_sweep.py  # aggregate sweep plots from saved runs
-utils/evaluate_checkpoint_metrics.py  # evaluate checkpoints every N epochs and write test_loss_by_class.json
-program.md                            # active execution tracker for the current task
-
-docs/synthetic_pointcloud_dataset.md
-docs/synthetic_pointcloud_math_foundations.md
-```
-
-## Current Default Experiment
-
-`conf/config.yaml` is the main training config. Its defaults are:
-- `data: synth_pc_datamodule`
-- `model: mini_mlp`
-- `trainer: sit_trainer`
-
-The current synthetic setup is a single-class affine-subspace dataset with:
-- one sample = one vector in `R^D`
-- `ambient_dim` defined once in `conf/config.yaml`
-- `intrinsic_dim` defined once in `conf/config.yaml`
-- `anisotropy_max_scale` defined once in `conf/config.yaml`
-
-Those shared parameters are propagated via Hydra interpolations:
-- `ambient_dim -> data.in_channels`
-- `ambient_dim -> model.in_channels`
-- `ambient_dim -> class_sweeps[*].base.D`
-- `intrinsic_dim -> class_sweeps[*].base.d`
-- `anisotropy_max_scale -> class_sweeps[*].sweep.anisotropy.max_scale`
-- `data_thickness -> class_sweeps[*].base.thickness`
-
-`conf/data/synth_pc.yaml` uses `class_sweeps` with a single base class and a sweepable anisotropy value. In practice, Hydra multirun produces one training job per anisotropy setting.
-
-## Synthetic Dataset Notes
-
-`datamodules/synthetic_pointclouds.py` now works in the point-wise setting:
-- each sample is a single vector `[D]`, not a cloud `[N, D]`
-- class geometry is sampled once per class
-- per-sample randomness only resamples latent coordinates, component choice, and additive noise
-
-Supported geometric families:
-- `affine_subspace`
-- `sine_warp_subspace`
-- `mog`
-
-The default datamodule computes:
-- SWD
-- Exact-W2
-- Energy-U
-- Feature-MMD
-
-These metrics are computed directly on vector samples `[N, D]`; the legacy cloud-level metric path has been removed.
-
-Per-run artifacts are written under `results/<experiment>/metrics/`:
-- `class_registry.json`
-- `val_loss_by_class.jsonl`
-- `test_loss_by_class.json`
-
-Validation-time distribution plots are written under `results/<experiment>/plots/val/`:
-- `distribution_comparison_epochXXX_stepXXXXXXX.png`
-- `manifest.jsonl`
-
-Each validation pass logs the same `ground truth vs generated` comparison figure to W&B.
-These figures use the same seaborn-style visual language already used by the repo plotting utilities, with a shared blue density palette and a shared density scale between the left and right panels for each class.
-
-## Training Commands
-
-Single run with the current defaults:
+Run the default synthetic experiment:
 
 ```bash
-uv run python SiT/train.py
+uv run python SiT/train.py trainer.strategy=auto
 ```
 
-Single run with explicit synthetic controls:
+Run a small smoke test without W&B:
+
+```bash
+uv run python SiT/train.py \
+  trainer.strategy=auto \
+  trainer.use_wandb=false \
+  trainer.epochs=1 \
+  data.train_samples_per_class=512 \
+  data.val_samples_per_class=512 \
+  data.test_samples_per_class=256
+```
+
+The default configuration trains a vector model on a single-class affine-subspace distribution. The main geometric controls live in [`conf/config.yaml`](conf/config.yaml):
+
+```yaml
+ambient_dim: 16
+intrinsic_dim: 6
+anisotropy_max_scale: 1.0
+data_thickness: 0.02
+```
+
+These values are propagated into the datamodule and model configuration, so changing them at the command line is usually enough to define a new synthetic condition.
+
+## Example Experiments
+
+Single run with explicit geometry:
 
 ```bash
 uv run python SiT/train.py \
@@ -110,7 +99,7 @@ uv run python SiT/train.py \
   trainer.strategy=auto
 ```
 
-Ambient-8 anisotropy sweep over 5 levels:
+Anisotropy sweep in ambient dimension 8:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
@@ -121,7 +110,7 @@ CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
   trainer.strategy=auto
 ```
 
-Ambient-16 anisotropy sweep over the same 5 levels:
+Anisotropy sweep in ambient dimension 16:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
@@ -132,32 +121,68 @@ CUDA_VISIBLE_DEVICES=0 uv run python SiT/train.py -m \
   trainer.strategy=auto
 ```
 
-Notes:
-- `trainer.strategy=auto` is the safest override for single-GPU runs.
-- `model.num_classes` is resolved automatically at runtime from the instantiated datamodule.
-- W&B is enabled by default through `conf/trainer/sit_trainer.yaml`.
-- `trainer.run_name` controls the human-readable run label used for local experiment naming.
-- `trainer.wandb_run_name` can override the W&B display name when needed.
-
-Evaluate checkpoints every 5 epochs (defaults: W2 at 2048 samples/class, SWD/MMD/L2 at 10000):
+Evaluate saved checkpoints every 5 epochs:
 
 ```bash
 uv run python utils/evaluate_checkpoint_metrics.py
-# Example override:
+```
+
+With an explicit result root and stride:
+
+```bash
 uv run python utils/evaluate_checkpoint_metrics.py \
-  roots='[results/gaussian_anisotropy_sweep]' \
+  roots='[results/anisotropy_sweep_ambient8_d6]' \
   epoch_stride=10
 ```
 
+## Synthetic Data Controls
+
+Synthetic samples are individual vectors in `R^D`, not point clouds. Each class has a fixed geometry, and each sample resamples latent coordinates, mode choice, and additive noise.
+
+Supported families:
+
+- `affine_subspace`
+- `sine_warp_subspace`
+- `mog`
+
+Controllable factors include:
+
+- intrinsic dimension `d`
+- ambient dimension `D`
+- number and separation of mixture modes
+- anisotropy of intrinsic coordinates
+- manifold thickness
+- tail behavior: Gaussian, Laplace, Student-t, or truncated Cauchy
+- sine-warp curvature
+
+## Outputs
+
+Each training run writes a separate experiment directory under `results/`:
+
+```text
+results/<run>/
+  checkpoints/
+  metrics/
+    class_registry.json
+    val_loss_by_class.jsonl
+    test_loss_by_class.json
+  plots/
+    val/
+      distribution_comparison_epochXXX_stepXXXXXXX.png
+      manifest.jsonl
+```
+
+The metric files are intended to be consumed directly by plotting and aggregation scripts. They contain both optimization losses and generative distribution metrics, including per-class values and aggregate summaries when available.
+
 ## Plotting
 
-Visualize the current synthetic dataset:
+Visualize the configured synthetic dataset:
 
 ```bash
 uv run python utils/plot_distribution.py
 ```
 
-Regenerate the documentation figures:
+Regenerate the documentation-style dataset figures:
 
 ```bash
 uv run python utils/plot_distribution.py --config-name plot_dataset_docs
@@ -174,23 +199,22 @@ uv run python utils/plot_anisotropy_intrinsic_sweep.py \
   results_root=results/anisotropy_sweep_ambient16_d6
 ```
 
-The sweep plotting utility reads local training artifacts from `results/...` and matches them with local W&B logs under `wandb/`.
-It now summarizes and plots both `val/feature_mmd_mean` and `val/swd_mean` when available.
+The aggregation script reads local metric artifacts and, when present, local W&B logs under `wandb/`. It summarizes validation loss, sliced Wasserstein distance, and feature-MMD trends across sweep conditions.
 
-## Sampling Configuration
+## Sampling
 
-Sampling is configured in `conf/model/*.yaml`:
+Sampling behavior is configured in the model YAML files under [`conf/model/`](conf/model/). The vector experiments currently support ODE and SDE sampling modes:
 
 ```yaml
 sampling:
-  mode: ODE  # or SDE
+  mode: ODE
   ode:
-    method: dopri5  # dopri5, euler, heun
+    method: dopri5
     num_steps: 50
     atol: 1.0e-6
     rtol: 1.0e-3
   sde:
-    method: Euler  # Euler, Heun
+    method: Euler
     num_steps: 250
     diffusion_form: SBDM
     diffusion_norm: 1.0
@@ -198,6 +222,6 @@ sampling:
     last_step_size: 0.04
 ```
 
-## Maintenance
+## Status
 
-When repo behavior changes, update this README so commands, config names, and outputs remain accurate.
+This is an active research playground. The synthetic-vector path is the most developed part of the repository; image-folder support exists as a bridge toward real latent experiments, but the core scientific protocol is still centered on controlled synthetic geometry.
