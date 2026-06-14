@@ -4,6 +4,8 @@ Diffusability Playground is a research codebase for studying when a latent space
 
 The central idea is to separate the geometry of the data distribution from the decoder, dataset, and representation-learning confounders that usually appear in latent diffusion experiments. The repository starts from synthetic vector distributions with controlled intrinsic dimension, ambient dimension, anisotropy, curvature, multimodality, tail behavior, and manifold thickness. These controlled settings make it possible to ask sharper questions about latent-space diffusability before moving the same evaluation protocol to real vision and audio latents.
 
+![Affine-subspace anisotropy sweep](docs/assets/pointcloud_dataset/sweep_anis_single_cloud_sweep_affine_anis.png)
+
 ## Scientific Goal
 
 Latent diffusion performance is often discussed in terms of semantic alignment, compression quality, or reconstruction fidelity, but these explanations do not fully isolate the geometry of the latent distribution itself. This project treats diffusability as an empirical property of a distribution: how efficiently a generative dynamics model can match it under fixed modeling, sampling, and compute budgets.
