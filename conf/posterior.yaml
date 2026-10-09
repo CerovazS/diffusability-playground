@@ -1,3 +1,7 @@
+defaults:
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
 action: train
 run_id: null
 output_root: outputs/posterior

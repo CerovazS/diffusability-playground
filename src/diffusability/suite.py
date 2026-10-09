@@ -79,6 +79,7 @@ def run_suite(cfg) -> None:
     root.mkdir(parents=True, exist_ok=False)
     (root / "logs").mkdir()
     base = OmegaConf.to_container(cfg, resolve=True)
+    base["defaults"] = [{"override hydra/job_logging": "disabled"}, {"override hydra/hydra_logging": "disabled"}, "_self_"]
     base["hydra"] = {"run": {"dir": "."}, "output_subdir": None, "job": {"chdir": False}}
     OmegaConf.save(OmegaConf.create(base), root / "base.yaml")
     matrix = list(itertools.product(cfg.suite.geometries, cfg.suite.seeds, cfg.suite.profiles))
