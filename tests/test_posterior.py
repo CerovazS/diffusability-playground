@@ -1,4 +1,5 @@
 import math
+import os
 import unittest
 
 import numpy as np
@@ -9,6 +10,32 @@ from diffusability.evaluation import distribution_metrics
 
 
 class PosteriorMathTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("POSTERIOR_CHECK_RUN_DIR"), "Requires a completed GPU preflight run")
+    def test_saved_checkpoints_reproduce_generations(self):
+        import json
+        from pathlib import Path
+        from omegaconf import OmegaConf
+        from diffusability.experiment import PosteriorFlow, validate
+        self.assertEqual(torch.cuda.device_count(), 1)
+        self.assertIn("3090", torch.cuda.get_device_name(0))
+        out = Path(os.environ["POSTERIOR_CHECK_RUN_DIR"])
+        cfg = OmegaConf.load(out / "config.yaml")
+        profiles = validate(cfg)
+        module = PosteriorFlow(cfg, profiles[cfg.profile], out).cuda().eval()
+        refs = torch.load(out / "artifacts/validation-references.pt", weights_only=True)
+        results = []
+        for step in range(cfg.generative_interval, cfg.max_steps+1, cfg.generative_interval):
+            # These checkpoints were produced by this repository's trusted preflight.
+            checkpoint = torch.load(out / "checkpoints" / f"step-{step:08d}.ckpt", map_location="cpu", weights_only=False)
+            self.assertEqual(checkpoint["global_step"], step)
+            module.load_state_dict(checkpoint["state_dict"])
+            samples = heun(module, refs["noise"].cuda(), cfg.solver_steps).cpu()
+            saved = torch.load(out / "artifacts" / f"validation-samples-step-{step:08d}.pt", weights_only=True)
+            self.assertEqual(saved["step"], step)
+            torch.testing.assert_close(samples, saved["generated"], atol=1e-6, rtol=1e-6)
+            results.append({"step":step,"max_absolute_sample_difference":float((samples-saved["generated"]).abs().max())})
+        (out / "reports/checkpoint_verification.json").write_text(json.dumps(results, indent=2)+"\n")
+
     def test_empirical_w2_translation_and_metric_definitions(self):
         x = torch.tensor([[0., 0.], [1., 0.], [2., 0.], [3., 0.]])
         y = x + torch.tensor([0., 2.])
