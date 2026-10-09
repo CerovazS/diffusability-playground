@@ -1,5 +1,14 @@
 # Diffusability Playground
 
+Primary Flywheel node: `on the diffusability of latent spaces`.
+
+The fixed-rate posterior covariance experiment is documented in [`program.md`](program.md).
+On Gauss, `bash scripts/run_posterior_gauss.sh action=validate` checks its configuration;
+`bash scripts/run_posterior_gauss.sh action=suite run_id=<unique-id>` runs the
+18 conditions sequentially on the RTX 3090. Each training is capped at 25 minutes;
+the queue stops on failure or an incomplete optimization budget. Results, logs,
+checkpoints, and paired comparisons live under `outputs/posterior/<unique-id>/`.
+
 Diffusability Playground is a research codebase for studying when a latent space is easy or hard for diffusion and flow-matching models to learn.
 
 The central idea is to separate the geometry of the data distribution from the decoder, dataset, and representation-learning confounders that usually appear in latent diffusion experiments. The repository starts from synthetic vector distributions with controlled intrinsic dimension, ambient dimension, anisotropy, curvature, multimodality, tail behavior, and manifold thickness. These controlled settings make it possible to ask sharper questions about latent-space diffusability before moving the same evaluation protocol to real vision and audio latents.
