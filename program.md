@@ -4,7 +4,7 @@ Primary Flywheel node: `on the diffusability of latent spaces`.
 
 ## Objective and authorization
 
-Task `posterior-anisotropy-20261009`, revision 1, status: validated; production launch prepared.
+Task `posterior-anisotropy-20261009`, revision 1, status: production running.
 The user approved the proposed synthetic posterior experiment and explicitly
 authorized code changes, execution on Gauss, only its RTX 3090, sequential jobs,
 and no training longer than 20–30 minutes. Routine implementation and recovery
@@ -111,3 +111,12 @@ the implemented method. Estimated total runtime from preflight: 30–40 minutes,
 subject to actual production throughput. Re-check suite status and GPU placement
 after launch, then use a task heartbeat to collect completion or handle failures.
 No scientific conclusion is inferred from the preflight.
+
+Production started 2026-10-09 20:25 UTC at commit
+c26efef38299ac5c54fceb1a06d5298e267502a1. The suite identifier above is a label,
+not the measured start time. First process PID 97693 was observed on the RTX 3090
+only, using 462 MiB during training, with validation progressing past 2,000 steps.
+The other GPU was idle. Native task heartbeat `posteriori-su-gauss-completamento`
+is active every 10 minutes; it stays quiet during normal progress and collects
+the final result or reports an error. Do not pull documentation-only updates into
+the active checkout while the matrix is running; preserve its source provenance.
