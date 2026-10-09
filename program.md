@@ -4,7 +4,7 @@ Primary Flywheel node: `on the diffusability of latent spaces`.
 
 ## Objective and authorization
 
-Task `posterior-anisotropy-20261009`, revision 1, status: production running.
+Task `posterior-anisotropy-20261009`, revision 2, status: generative-checkpoint preflight.
 The user approved the proposed synthetic posterior experiment and explicitly
 authorized code changes, execution on Gauss, only its RTX 3090, sequential jobs,
 and no training longer than 20–30 minutes. Routine implementation and recovery
@@ -14,6 +14,10 @@ new persistent chats, VAE experiments, cloud resources, or manuscript edits.
 Definition of done: validated implementation, 18 sequential production runs
 (2 center geometries x 3 covariance profiles x 3 training seeds), local metrics,
 checkpoints, plots, paired comparison and a report including negative outcomes.
+The user explicitly stopped revision 1 and authorized restarting all 18 runs from
+scratch with saved checkpoints and generative evaluation every 2,000 steps.
+All six checkpoints (2k, 4k, 6k, 8k, 10k, 12k) must have generated samples and
+distributional metrics. Earlier outputs are retained but excluded from this matrix.
 Training has a 25-minute graceful limit and each process a 29-minute watchdog.
 Stop the queue on failure or incomplete training; do not compare truncated runs
 to full-budget runs. A small separately labelled preflight precedes production.
@@ -26,13 +30,17 @@ fixed within each geometry? Paper anisotropy is Var_i(log posterior variance).
 Hypothesis: lower posterior anisotropy reduces held-out marginal velocity error
 at the same optimization budget. The directional hypothesis is not assumed true.
 
-Primary evidence: final held-out per-coordinate squared error against the exact
-marginal velocity of the linear conditional flow-matching path. Secondary:
-validation error vs steps, SWD of generated vs independent reference samples,
-real-vs-real SWD floor, and oracle-flow sampling with the same numerical solver.
+Primary generative evidence: full W2, SWD, energy-distance and MMD-squared learning
+curves at every predeclared checkpoint, with real-vs-real finite-sample controls
+and oracle-flow sampling using the same numerical solver. Oracle velocity MSE
+is a separate mechanistic diagnostic and must not substitute for generation.
+Report paired high-minus-low metric differences at every checkpoint, including
+negative and non-monotonic effects; do not select a favorable checkpoint.
+No single generative significance threshold is preregistered for this descriptive
+three-seed toy. A discrepancy with velocity error must be reported explicitly.
 Compare paired seed-wise log(error_high/error_low) separately for each geometry;
 report all three paired effects, their mean and dispersion. A provisional
-support signal requires >=10% lower mean primary error and consistent positive
+oracle-only support signal requires >=10% lower mean oracle error and consistent positive
 paired effects in both geometries. Otherwise report inconclusive, null,
 geometry-dependent, or opposite effects, without searching for a favorable subset.
 Three seeds are descriptive evidence, not a powered significance test.
@@ -61,6 +69,19 @@ test, reference, solver noise, and projection streams have separate hashed
 namespaces. Pair random numbers across profiles within a training seed.
 Validation and test tensors are independently generated and reproducible by seed/config.
 Test is evaluated once at the final fixed-step checkpoint and never selects runs.
+Generative trajectories use a separate validation stream at all six checkpoints.
+Generate 4,096 samples with Heun 128 steps (256 NFE); SWD uses all samples and
+256 fixed unit projections. Exact empirical W2 (unregularized discrete OT),
+energy-distance U-statistic and unbiased RBF MMD-squared use the first 2,048 IID
+samples. This W2 is exact for the empirical measures, not the population mixture.
+MMD gamma is 1/[2*(trace(S)+center_radius^2)], fixed within each geometry and
+across checkpoints. No whitening or generated-data bandwidth fitting is used.
+Negative unbiased energy/MMD estimates are retained. Sampling noise, reference
+sets and projections are fixed across checkpoints and paired across profiles.
+Each split caches its real-vs-real and oracle controls; references, all generated
+samples and checkpoint-wise JSON/CSV are saved. Evaluation wall time is recorded.
+The 25-minute fit limit includes intermediate generation; the 29-minute process
+watchdog includes final testing, keeping each full run below the 30-minute budget.
 
 ## Resources, provenance, and artifacts
 
@@ -89,7 +110,7 @@ Curated Flywheel logging follows final evidence review; presently no Flywheel
 MCP tools are exposed. If still unavailable at completion, record that limitation
 and retain local evidence rather than claim a graph publication occurred.
 
-## Current state
+## Revision 1 history (superseded)
 
 Branch: experiment/posterior-anisotropy-20261009, based on main f250376.
 Implementation commit: 408f7ba956f4bba2ee185d42663b063817b4e047.
@@ -120,3 +141,13 @@ The other GPU was idle. Native task heartbeat `posteriori-su-gauss-completamento
 is active every 10 minutes; it stays quiet during normal progress and collects
 the final result or reports an error. Do not pull documentation-only updates into
 the active checkout while the matrix is running; preserve its source provenance.
+
+## Revision 2 execution
+
+Revision 1 was stopped at the user's request after nine completed runs, during
+separated-low-seed0. Its parent and training process were terminated; GPU/process
+inspection confirmed no remaining workload. Its status is stopped_by_user.
+The old heartbeat is paused. No original dirty-checkout files were modified.
+Next: validate metric definitions and checkpoint-to-sample correspondence, time
+a two-checkpoint preflight at the proposed sample counts, then restart all 18
+conditions in a new uniquely named suite and retarget the existing heartbeat.

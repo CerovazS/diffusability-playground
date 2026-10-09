@@ -19,7 +19,8 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from .console import info, ok
-from .posterior import covariance_profiles, draw, exact_velocity, generator, heun, make_centers, path_batch, sliced_w2
+from .posterior import covariance_profiles, draw, exact_velocity, generator, heun, make_centers, path_batch
+from .evaluation import distribution_metrics, generative_plot
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -32,11 +33,15 @@ def validate(cfg: DictConfig) -> dict:
     OmegaConf.resolve(cfg)
     if cfg.geometry not in cfg.radii or cfg.profile not in ("low", "mid", "high"):
         raise ValueError("Unknown geometry or profile.")
-    positive = ["max_steps", "validation_interval", "batch_size", "eval_samples", "test_samples", "sample_count", "projections", "solver_steps", "cpu_threads", "log_interval"]
+    positive = ["max_steps", "validation_interval", "generative_interval", "batch_size", "eval_samples", "test_samples", "sample_count", "distribution_samples", "projections", "solver_steps", "cpu_threads", "log_interval"]
     if any(int(cfg[k]) <= 0 for k in positive) or not 0 < cfg.training_minutes <= 25:
         raise ValueError("Invalid positive counts or training time cap.")
     if cfg.max_steps % cfg.validation_interval:
         raise ValueError("max_steps must be divisible by validation_interval.")
+    if cfg.max_steps % cfg.generative_interval or cfg.generative_interval % cfg.validation_interval:
+        raise ValueError("Generative checkpoints must align with validation and the final step.")
+    if not 2 <= cfg.distribution_samples <= cfg.sample_count:
+        raise ValueError("Distribution metric subset must contain 2..sample_count samples.")
     if cfg.components < 2 or cfg.learning_rate <= 0:
         raise ValueError("Invalid components or learning rate.")
     if set(cfg.suite.geometries) - set(cfg.radii) or set(cfg.suite.profiles) - {"low", "mid", "high"}:
@@ -58,6 +63,7 @@ class PosteriorFlow(L.LightningModule):
         self.register_buffer("mu", mu.float())
         self.register_buffer("variances", torch.as_tensor(variances, dtype=torch.float32))
         self.started = time.monotonic()
+        self.evaluation_cache = {}
 
     def forward(self, x, t):
         return self.network(x, t.flatten(), torch.zeros(len(x), device=x.device, dtype=torch.long))
@@ -104,20 +110,35 @@ class PosteriorFlow(L.LightningModule):
         self.log("val_oracle_mse", metrics["oracle_mse"], batch_size=self.cfg.eval_samples)
         self.record("validation", metrics)
         info(f"step={self.global_step} validation oracle MSE={metrics['oracle_mse']:.6g}")
+        if self.global_step % self.cfg.generative_interval == 0:
+            metrics = self.sample_metrics("validation")
+            self.record("generative", metrics)
+            write_json(self.out / "metrics" / f"generative-step-{self.global_step:08d}.json", {"step": self.global_step, "split": "validation", **metrics})
+            generative_plot(self.out)
+            info(f"step={self.global_step} generative W2={metrics['w2']:.6g}, SWD={metrics['swd']:.6g}, seconds={metrics['evaluation_seconds']:.2f}")
 
     @torch.no_grad()
-    def sample_metrics(self):
+    def sample_metrics(self, split="test"):
+        started = time.monotonic()
         n = self.cfg.sample_count
-        rng = generator(self.cfg.seed, "test:noise", self.device)
-        noise = torch.randn(n, self.cfg.dim, device=self.device, generator=rng)
+        gamma = 1.0 / (2*(self.cfg.trace+self.cfg.radii[self.cfg.geometry]**2))
+        if split not in self.evaluation_cache:
+            noise = torch.randn(n, self.cfg.dim, device=self.device, generator=generator(self.cfg.seed, split+":noise", self.device))
+            oracle = heun(lambda x, t: exact_velocity(x, t, self.mu, self.variances), noise, self.cfg.solver_steps)
+            real = draw(self.mu, self.variances, n, generator(self.cfg.seed, split+":reference", self.device))
+            real2 = draw(self.mu, self.variances, n, generator(self.cfg.seed, split+":reference2", self.device))
+            directions = torch.randn(self.cfg.dim, self.cfg.projections, device=self.device, generator=generator(self.cfg.seed, split+":projections", self.device))
+            directions /= directions.norm(dim=0, keepdim=True)
+            baselines = {}
+            for prefix, samples in [("real_real_", real2), ("oracle_sampler_", oracle)]:
+                baselines.update({prefix+k:v for k,v in distribution_metrics(samples, real, directions, self.cfg.distribution_samples, gamma).items()})
+            self.evaluation_cache[split] = (noise, real, directions, baselines)
+            torch.save({"noise":noise.cpu(), "reference":real.cpu(), "reference2":real2.cpu(), "oracle":oracle.cpu(), "directions":directions.cpu()}, self.out / "artifacts" / f"{split}-references.pt")
+        noise, real, directions, baselines = self.evaluation_cache[split]
         generated = heun(self, noise, self.cfg.solver_steps)
-        oracle = heun(lambda x, t: exact_velocity(x, t, self.mu, self.variances), noise, self.cfg.solver_steps)
-        real = draw(self.mu, self.variances, n, generator(self.cfg.seed, "test:reference", self.device))
-        real2 = draw(self.mu, self.variances, n, generator(self.cfg.seed, "test:reference2", self.device))
-        directions = torch.randn(self.cfg.dim, self.cfg.projections, device=self.device, generator=generator(self.cfg.seed, "test:projections", self.device))
-        directions /= directions.norm(dim=0, keepdim=True)
-        torch.save({"generated": generated.cpu(), "reference": real.cpu(), "oracle": oracle.cpu()}, self.out / "artifacts" / "samples.pt")
-        return {"swd": sliced_w2(generated, real, directions), "real_real_swd": sliced_w2(real2, real, directions), "oracle_sampler_swd": sliced_w2(oracle, real, directions), "solver_nfe": 2*self.cfg.solver_steps}
+        metrics = distribution_metrics(generated, real, directions, self.cfg.distribution_samples, gamma)
+        torch.save({"generated":generated.cpu(), "step":self.global_step, "split":split}, self.out / "artifacts" / f"{split}-samples-step-{self.global_step:08d}.pt")
+        return {**metrics, **baselines, "sample_count":n, "distribution_samples":self.cfg.distribution_samples, "mmd_gamma":gamma, "solver_nfe":2*self.cfg.solver_steps, "evaluation_seconds":time.monotonic()-started}
 
 
 def plot_history(out: Path) -> None:
@@ -157,7 +178,7 @@ def train(cfg: DictConfig, profiles: dict) -> None:
     L.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision("highest")
     module = PosteriorFlow(cfg, profiles[cfg.profile], out)
-    checkpoint = ModelCheckpoint(dirpath=out / "checkpoints", filename="best-{step}", monitor="val_oracle_mse", mode="min", save_top_k=1, save_last=True, auto_insert_metric_name=False)
+    checkpoint = ModelCheckpoint(dirpath=out / "checkpoints", filename="step-{step:08d}", save_top_k=-1, every_n_train_steps=cfg.generative_interval, save_on_train_epoch_end=False, save_last=True, auto_insert_metric_name=False)
     trainer = L.Trainer(accelerator="gpu", devices=1, precision="32-true", max_steps=cfg.max_steps, max_epochs=1, max_time={"minutes": cfg.training_minutes}, callbacks=[checkpoint], logger=CSVLogger(str(out / "metrics"), name="lightning"), num_sanity_val_steps=0, val_check_interval=cfg.validation_interval, log_every_n_steps=cfg.log_interval, enable_progress_bar=False, enable_model_summary=False, deterministic=True)
     started = time.monotonic()
     train_loader = DataLoader(TensorDataset(torch.arange(cfg.max_steps)), batch_size=1, num_workers=0)
@@ -167,6 +188,10 @@ def train(cfg: DictConfig, profiles: dict) -> None:
     if trainer.global_step != cfg.max_steps:
         write_json(out / "status.json", {"state": "incomplete", "steps": trainer.global_step, "training_seconds": training_seconds})
         raise RuntimeError("Training time limit reached before fixed budget; stopping suite.")
+    for step in range(cfg.generative_interval, cfg.max_steps+1, cfg.generative_interval):
+        for path in [out / "checkpoints" / f"step-{step:08d}.ckpt", out / "metrics" / f"generative-step-{step:08d}.json", out / "artifacts" / f"validation-samples-step-{step:08d}.pt"]:
+            if not path.is_file():
+                raise RuntimeError(f"Missing required checkpoint evaluation artifact: {path}")
     # Lightning returns the module to CPU after teardown; evaluation stays on 3090.
     module.to("cuda").eval()
     result = {"run_id": cfg.run_id, "geometry": cfg.geometry, "profile": cfg.profile, "seed": cfg.seed, "steps": trainer.global_step, "training_seconds": training_seconds, "checkpoint_policy": "final fixed-step checkpoint; test never selects checkpoint", **module.velocity_metrics("test", cfg.test_samples), **module.sample_metrics()}

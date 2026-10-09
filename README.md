@@ -8,6 +8,9 @@ On Gauss, `bash scripts/run_posterior_gauss.sh action=validate` checks its confi
 18 conditions sequentially on the RTX 3090. Each training is capped at 25 minutes;
 the queue stops on failure or an incomplete optimization budget. Results, logs,
 checkpoints, and paired comparisons live under `outputs/posterior/<unique-id>/`.
+Every 2,000 steps it saves a checkpoint and 4,096 generated samples, evaluating
+SWD plus exact empirical W2, energy distance and MMD-squared on a 2,048-sample
+subset. Full generative learning curves and real-vs-real controls are retained.
 
 Diffusability Playground is a research codebase for studying when a latent space is easy or hard for diffusion and flow-matching models to learn.
 

@@ -47,12 +47,12 @@ def summarize(root: Path, completed: list[str]) -> None:
             effects[geometry] = {"pairs": paired, "mean_log_effect": mean,
                 "sd_log_effect": (sum((v-mean)**2 for v in values)/(len(values)-1))**0.5 if len(values)>1 else None,
                 "relative_mean_error_reduction": 1-sum(low)/sum(high),
-                "provisional_directional_support": len(values)>=3 and min(values)>0 and 1-sum(low)/sum(high)>=0.1}
+                "oracle_directional_criterion_only": len(values)>=3 and min(values)>0 and 1-sum(low)/sum(high)>=0.1}
     write_json(root / "paired_effects.json", effects)
     (root / "summary.md").write_text(
         f"# Posterior covariance experiment\n\nCompleted runs: {len(rows)}. "
         "Paired effects are descriptive; three seeds do not provide a powered significance test. "
-        "Positive log(high/low error) favors lower anisotropy. Compare within each geometry.\n\n"
+        "Positive log(high/low error) favors lower anisotropy. These are oracle-error diagnostics, not a generative-quality conclusion. Compare within each geometry. Generative trajectories and paired checkpoint effects are in generative_curves.csv and generative_effects.json.\n\n"
         f"```json\n{json.dumps(effects, indent=2)}\n```\n\n"
         "Interpret the full profile intervention, not a universal law about a scalar. "
         "No real-VAE downstream claim follows from this toy experiment.\n")
@@ -70,6 +70,39 @@ def summarize(root: Path, completed: list[str]) -> None:
     fig.tight_layout()
     fig.savefig(root / "comparison.png", dpi=160)
     plt.close(fig)
+    curves = []
+    for name in completed:
+        metadata = next(r for r in rows if r["run_id"].endswith("/"+name))
+        with (root / name / "metrics/generative.csv").open() as handle:
+            for row in csv.DictReader(handle):
+                curves.append({"geometry":metadata["geometry"], "profile":metadata["profile"], "seed":metadata["seed"], **{k:float(v) for k,v in row.items()}})
+    with (root / "generative_curves.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(curves[0]))
+        writer.writeheader()
+        writer.writerows(curves)
+    effects = []
+    for geometry, seed, step in sorted({(r["geometry"],r["seed"],r["step"]) for r in curves}):
+        pair = {r["profile"]:r for r in curves if (r["geometry"],r["seed"],r["step"])==(geometry,seed,step)}
+        if "low" in pair and "high" in pair:
+            effects.append({"geometry":geometry,"seed":seed,"step":step, **{m+"_high_minus_low":pair["high"][m]-pair["low"][m] for m in ["w2","swd","energy_distance","mmd2"]}})
+    write_json(root / "generative_effects.json", {"interpretation":"Positive high-minus-low favors low; report all checkpoints without selecting favorable steps.", "effects":effects})
+    for metrics, filename in [(["w2","swd"], "generative_wasserstein.png"), (["energy_distance","mmd2"], "generative_other.png")]:
+        fig, axes = plt.subplots(2, 2, figsize=(11, 7), facecolor="white")
+        for i, geometry in enumerate(["overlap","separated"]):
+            for ax, metric in zip(axes[i], metrics):
+                for profile, color in zip(["low","mid","high"], ["#E07A5F","#3D405B","#81B29A"]):
+                    subset = [r for r in curves if r["geometry"]==geometry and r["profile"]==profile]
+                    steps = sorted({r["step"] for r in subset})
+                    means = [sum(r[metric] for r in subset if r["step"]==s)/sum(r["step"]==s for r in subset) for s in steps]
+                    floors = [sum(r["real_real_"+metric] for r in subset if r["step"]==s)/sum(r["step"]==s for r in subset) for s in steps]
+                    ax.plot(steps, means, "o-", color=color, label=profile)
+                    ax.plot(steps, floors, ":", color=color, alpha=.65)
+                ax.set(xlabel="Optimizer steps", ylabel=metric, title=geometry+" (dotted: real vs real)")
+                ax.set_facecolor("white")
+                ax.legend()
+        fig.tight_layout()
+        fig.savefig(root / filename, dpi=160)
+        plt.close(fig)
 
 
 def run_suite(cfg) -> None:

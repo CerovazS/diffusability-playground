@@ -5,9 +5,23 @@ import numpy as np
 import torch
 
 from diffusability.posterior import covariance_profiles, exact_velocity, generator, heun, log_density, make_centers, stream_seed
+from diffusability.evaluation import distribution_metrics
 
 
 class PosteriorMathTests(unittest.TestCase):
+    def test_empirical_w2_translation_and_metric_definitions(self):
+        x = torch.tensor([[0., 0.], [1., 0.], [2., 0.], [3., 0.]])
+        y = x + torch.tensor([0., 2.])
+        metrics = distribution_metrics(y, x, torch.eye(2), 4, .1)
+        self.assertAlmostEqual(metrics["w2"], 2., places=7)
+        self.assertAlmostEqual(metrics["swd"], math.sqrt(2), places=6)
+        self.assertTrue(all(math.isfinite(v) for v in metrics.values()))
+        self.assertGreater(metrics["energy_distance"], 0)
+        self.assertGreater(metrics["mmd2"], 0)
+        identity = distribution_metrics(x, x, torch.eye(2), 4, .1)
+        self.assertAlmostEqual(identity["w2"], 0, places=7)
+        self.assertAlmostEqual(identity["swd"], 0, places=7)
+
     def test_constraints_and_paper_anisotropy(self):
         profiles = covariance_profiles(16, 8, 16*math.log(.5)-4, [2, 4, 8])
         mu = make_centers(16, 8, 3, 42)
