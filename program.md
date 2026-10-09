@@ -4,7 +4,7 @@ Primary Flywheel node: `on the diffusability of latent spaces`.
 
 ## Objective and authorization
 
-Task `posterior-anisotropy-20261009`, revision 2, status: replacement production running.
+Task `posterior-anisotropy-20261009`, revision 2, status: completed and verified.
 The user approved the proposed synthetic posterior experiment and explicitly
 authorized code changes, execution on Gauss, only its RTX 3090, sequential jobs,
 and no training longer than 20–30 minutes. Routine implementation and recovery
@@ -175,3 +175,46 @@ heartbeat `posteriori-su-gauss-completamento` is active again, retargeted solely
 to this replacement suite, checking every 10 minutes. Preserve the active source
 commit on Gauss until all children finish; subsequent program-only commits are
 status documentation, not changes to the running method.
+
+## Final outcome (revision 2)
+
+All 18 runs completed at 12,000 updates: 108 numbered checkpoints, 108 generative
+validation evaluations, and 18 independent final tests. Fit duration including
+intermediate sampling was 109.34–111.45 seconds per run; total suite wall time
+was 2,147.71 seconds (35.80 minutes). No time limit was reached. All runs used
+the authorized RTX 3090 and source f1e0e6a24fa22db238e54f3f0bb6bd8d1038b851.
+Sequential execution, checkpoint ZIP CRCs, sample shapes/finiteness, CSV/JSON
+agreement, all six steps, and invariant centers/rate/trace/logdet were verified.
+Invariants agree within 1e-9 in float64 diagnostics; training used float32.
+The GPU is now idle. The completion heartbeat is disabled at closure.
+
+The experiment does not establish a stable generative advantage for lower
+posterior anisotropy. SWD, energy distance and MMD-squared change ordering across
+checkpoints. For separated centers, paired validation SWD favors low at 4k in
+all three seeds, but high at 6k, 8k and 12k in all three seeds. Report every step;
+these are correlated descriptive observations, not independent replications.
+Final independent-test SWD means (low/high) are 0.033889/0.034480 for overlap and
+0.051531/0.048304 for separated centers. In separated centers final energy and
+MMD also favor high on average. Do not infer downstream VAE utility.
+
+Raw empirical W2 is lower for low at every checkpoint, but its finite-sample
+baseline also changes substantially by profile. Final high-minus-low W2 means
+are 0.09334 (overlap) and 0.07044 (separated); corresponding real-vs-real gaps
+are already 0.07977 and 0.08521. These values cannot by themselves establish a
+learnability advantage; baseline subtraction is not an unbiased population-W2
+estimator. Final oracle velocity MSE is about 2.72% and 2.99% higher for low than
+high, respectively, so the preliminary oracle-only directional criterion fails.
+
+All remote artifacts remain under the revision-2 suite directory. A checksum-
+verified local copy of 514 non-checkpoint artifacts, including generated samples
+and reference samples, is under this chat's outputs/posterior-v2/production/.
+The 108 numbered checkpoints and last.ckpt files remain on Gauss; verification.json
+and sha256_manifest.json cover their integrity. The self-contained Italian report
+is outputs/posterior-v2/report.md; paired_checkpoint_effects.csv contains all
+144 seed-wise metric differences (2 geometries x 6 steps x 3 seeds x 4 metrics).
+
+Flywheel logging is explicitly ruled out for this execution: a fresh capability
+check at closure found no exposed Flywheel tools. The intended primary node is
+named above, but no graph publication was attempted or claimed. Evidence and
+limitations are retained locally and in this versioned program. No manuscript
+change, new experiment matrix, or unrelated checkout modification was made.
