@@ -4,7 +4,7 @@ Primary Flywheel node: `on the diffusability of latent spaces`.
 
 ## Objective and authorization
 
-Task `posterior-anisotropy-20261009`, revision 2, status: generative-checkpoint preflight.
+Task `posterior-anisotropy-20261009`, revision 2, status: replacement production running.
 The user approved the proposed synthetic posterior experiment and explicitly
 authorized code changes, execution on Gauss, only its RTX 3090, sequential jobs,
 and no training longer than 20–30 minutes. Routine implementation and recovery
@@ -166,3 +166,12 @@ The 25-minute fit / 29-minute process limits remain in force. The existing heart
 will monitor this replacement suite only after launch. Final verification requires
 108 numbered checkpoints and 108 generative validation evaluations, plus 18
 independent final tests, all with preserved samples, configurations and provenance.
+
+Replacement launched 2026-10-09 20:45 UTC (22:45 Europe/Rome), source commit
+f1e0e6a24fa22db238e54f3f0bb6bd8d1038b851. Parent PID 98843, first training PID
+98859 observed exclusively on the RTX 3090. Both preflight checkpoints reproduced
+their stored samples with maximum absolute difference exactly zero. The native
+heartbeat `posteriori-su-gauss-completamento` is active again, retargeted solely
+to this replacement suite, checking every 10 minutes. Preserve the active source
+commit on Gauss until all children finish; subsequent program-only commits are
+status documentation, not changes to the running method.
