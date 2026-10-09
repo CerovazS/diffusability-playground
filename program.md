@@ -148,6 +148,21 @@ Revision 1 was stopped at the user's request after nine completed runs, during
 separated-low-seed0. Its parent and training process were terminated; GPU/process
 inspection confirmed no remaining workload. Its status is stopped_by_user.
 The old heartbeat is paused. No original dirty-checkout files were modified.
-Next: validate metric definitions and checkpoint-to-sample correspondence, time
-a two-checkpoint preflight at the proposed sample counts, then restart all 18
-conditions in a new uniquely named suite and retarget the existing heartbeat.
+Preflight `preflight-generative-20261009T204400Z/separated-high-seed0` completed
+4,000 updates and two generative checkpoints in 38.05 seconds of fit time.
+Generative evaluation took 3.57 seconds initially (including reference controls)
+and 1.61 seconds at the next checkpoint; independent final testing took 3.54 seconds.
+Sample counts remain 4,096 for SWD and 2,048 for W2/energy/MMD. Six tests passed,
+including reloading both saved checkpoints and reproducing all generated samples
+within 1e-6 tolerance. Detailed errors are in reports/checkpoint_verification.json.
+No production hyperparameters were selected from the preflight metric values.
+
+New production suite: `posterior-generative-v2-20261009`, restarting every condition.
+Command: bash scripts/run_posterior_gauss.sh action=suite run_id=posterior-generative-v2-20261009
+tmux: posterior-generative-v2. Launch log: outputs/posterior-generative-v2.log.
+Remote artifacts: /home/cerovaz/repos/diffusability-posterior/outputs/posterior/posterior-generative-v2-20261009/.
+Estimated duration: about two minutes per full run, 35–45 minutes for the matrix.
+The 25-minute fit / 29-minute process limits remain in force. The existing heartbeat
+will monitor this replacement suite only after launch. Final verification requires
+108 numbered checkpoints and 108 generative validation evaluations, plus 18
+independent final tests, all with preserved samples, configurations and provenance.
