@@ -4,7 +4,7 @@ Primary Flywheel node: `on the diffusability of latent spaces`.
 
 ## Objective and authorization
 
-Task `posterior-anisotropy-20261009`, revision 1, status: implementing.
+Task `posterior-anisotropy-20261009`, revision 1, status: validated; production launch prepared.
 The user approved the proposed synthetic posterior experiment and explicitly
 authorized code changes, execution on Gauss, only its RTX 3090, sequential jobs,
 and no training longer than 20–30 minutes. Routine implementation and recovery
@@ -91,6 +91,23 @@ and retain local evidence rather than claim a graph publication occurred.
 
 ## Current state
 
-Local branch: experiment/posterior-anisotropy-20261009, based on main f250376.
-Remote original checkout is dirty and will not be modified. Next: implement,
-test, push, preflight on the isolated Gauss checkout, then launch the sequential suite.
+Branch: experiment/posterior-anisotropy-20261009, based on main f250376.
+Implementation commit: 408f7ba956f4bba2ee185d42663b063817b4e047.
+Isolated Gauss checkout: /home/cerovaz/repos/diffusability-posterior.
+Dependency manifests match the existing environment byte-for-byte. Four mathematical
+tests, Hydra resolution, Python compilation, shell syntax and diff checks passed.
+Preflight suite: outputs/posterior/preflight-20261009T1900 (the suffix is an identifier,
+not its actual start time; execution began 2026-10-09 20:24 UTC). It completed 1,000
+updates in about 8 seconds, including successful held-out evaluation, checkpoints,
+plots, and queue completion. It is excluded from the production comparison.
+
+Production suite ID: posterior-20261009T203000Z.
+Command: bash scripts/run_posterior_gauss.sh action=suite run_id=posterior-20261009T203000Z
+tmux session: posterior-20261009.
+Outputs: /home/cerovaz/repos/diffusability-posterior/outputs/posterior/posterior-20261009T203000Z/.
+Launch log: outputs/posterior-production.log. The exact source commit is recorded
+inside every run's artifacts/provenance.json; program-only updates do not change
+the implemented method. Estimated total runtime from preflight: 30–40 minutes,
+subject to actual production throughput. Re-check suite status and GPU placement
+after launch, then use a task heartbeat to collect completion or handle failures.
+No scientific conclusion is inferred from the preflight.
